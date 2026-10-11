@@ -92,7 +92,7 @@ const stubECharts = () => {
         ...tokens.map((name) => `export const ${name} = token;`),
         "export const use = () => {};",
         'export const init = () => { throw new Error("echarts is not bundled"); };',
-        "export class LinearGradient { constructor(x, y, x2, y2, colorStops) { this.type = \"linear\"; this.x = x; this.y = y; this.x2 = x2; this.y2 = y2; this.colorStops = colorStops; } }",
+        'export class LinearGradient { constructor(x, y, x2, y2, colorStops) { this.type = "linear"; this.x = x; this.y = y; this.x2 = x2; this.y2 = y2; this.colorStops = colorStops; } }',
         "export const graphic = { LinearGradient };",
       ].join("\n");
     },
