@@ -1,36 +1,28 @@
 import ComicRender from "./ComicRender";
 import JSZip from "jszip";
 import { createPDFIframe } from "../utils/pdfUtil.js";
-import {
-  buildPresentation,
-  parseZip,
-  renderSlide,
-  RECOMMENDED_ZIP_LIMITS,
-  searchPresentation,
-} from "@aiden0z/pptx-renderer";
-import type {
-  PresentationData,
-  SlideHandle,
-  TextSearchResult,
-} from "@aiden0z/pptx-renderer";
+import { parse, renderSlideToSvg, slideText } from "@web-ppt/core";
+import type { Presentation } from "@web-ppt/core";
 
-// PPTX 逐页经 @aiden0z/pptx-renderer 渲染为 HTML DOM 后直接挂进每页 iframe，
-// 中文文本走系统字体 fallback。
+// PPTX/PPT 逐页经 @web-ppt/core 渲染为 SVG DOM 后直接挂进每页 iframe，
+// 中文文本走系统字体 fallback；.ppt（CFB）由同一解析器按魔数识别。
 // 分页/懒加载/卸载机制沿用漫画的多 iframe 结构。
 class PptxRender extends ComicRender {
-  presentation: PresentationData | null = null;
-  // 已渲染页的资源句柄，卸载时 dispose 回收 blob URL
-  slideHandles: Map<number, SlideHandle>;
+  presentation: Presentation | null = null;
+  password: string = "";
 
   constructor(pptxBuffer: ArrayBuffer, config: any) {
     super(pptxBuffer, config);
-    this.slideHandles = new Map();
+    this.password = config.password || "";
   }
+
   async parse() {
     try {
       if (this.presentation) return;
-      const files = await parseZip(this.comicBuffer, RECOMMENDED_ZIP_LIMITS);
-      this.presentation = buildPresentation(files, { lazySlides: true });
+      // 加密文件会抛 PasswordRequiredError / WrongPasswordError
+      this.presentation = await parse(new Uint8Array(this.comicBuffer), {
+        password: this.password || undefined,
+      });
       const slideCount = this.presentation.slides.length;
       this.book = {
         metadata: { title: this.filePath || "presentation.pptx" },
@@ -68,7 +60,8 @@ class PptxRender extends ComicRender {
       throw error;
     }
   }
-  // PPTX 保存时若嵌入缩略图（docProps/thumbnail.*），直接作为封面
+  // OOXML 保存时若嵌入缩略图（docProps/thumbnail.*），直接作为封面；
+  // .ppt 无该条目时返回空由调用方兜底
   async getCoverBlob(): Promise<Blob | null> {
     try {
       const zip = await JSZip.loadAsync(this.comicBuffer);
@@ -84,8 +77,8 @@ class PptxRender extends ComicRender {
     return null;
   }
   /**
-   * 覆写漫画的页面渲染：把 renderSlide 输出的固定尺寸 DOM 挂进
-   * pdf-iframe-N，再按 iframe 宽度 transform 缩放适配。
+   * 覆写漫画的页面渲染：把 renderSlideToSvg 输出的整页 SVG 挂进
+   * pdf-iframe-N，SVG 自带 viewBox，按容器等比缩放适配。
    */
   async handleRenderComicChapter(chapterDocIndex: number) {
     if (chapterDocIndex >= this.chapterDocList.length || chapterDocIndex < 0) {
@@ -102,40 +95,25 @@ class PptxRender extends ComicRender {
     if (subDoc.body.innerHTML) {
       return;
     }
-    const presentation = this.presentation!;
-    const slide = presentation.slides[chapterDocIndex];
+    const presentation = this.presentation;
+    const slide = presentation?.slides[chapterDocIndex];
+    if (!presentation || !slide) return;
     subDoc.body.style.margin = "0";
     subDoc.body.style.height = "100%";
     subDoc.body.style.overflow = "hidden";
     subDoc.documentElement.style.height = "100%";
-    // 幻灯片内部按 presentation.width/height 像素绝对布局，
-    // 需按 iframe 实际宽度整体缩放，不能直接拉伸容器
-    const host = subDoc.createElement("div");
-    host.style.width = "100%";
-    host.style.height = "100%";
-    host.style.overflow = "hidden";
-    subDoc.body.appendChild(host);
-    let handle: SlideHandle | null = null;
     try {
-      handle = renderSlide(presentation, slide, {
-        onNodeError: (nodeId: string, error: unknown) => {
-          console.warn("pptx node render failed: " + nodeId, error);
-        },
-      });
-      const scale =
-        (subDoc.body.clientWidth || subIframe.clientWidth) /
-        presentation.width;
-      handle.element.style.transformOrigin = "top left";
-      if (scale > 0 && scale !== 1) {
-        handle.element.style.transform = "scale(" + scale + ")";
+      subDoc.body.innerHTML = renderSlideToSvg(presentation, slide);
+      const svg = subDoc.body.querySelector("svg");
+      if (svg) {
+        svg.setAttribute("width", "100%");
+        svg.setAttribute("height", "100%");
+        svg.style.display = "block";
       }
-      host.appendChild(handle.element);
     } catch (error) {
       console.error(error);
-      host.textContent = "Failed to render slide";
+      subDoc.body.textContent = "Failed to render slide";
     }
-    await (handle ? handle.ready : Promise.resolve());
-    this.slideHandles.set(chapterDocIndex, handle as SlideHandle);
     this.trigger("rendered", [chapterDocIndex] as any);
   }
   async handleUnloadComicChapter(chapterDocIndex: number) {
@@ -146,18 +124,12 @@ class PptxRender extends ComicRender {
     if (subDoc && subDoc.body.innerHTML === "") {
       return;
     }
-    const handle = this.slideHandles.get(chapterDocIndex);
-    if (handle) {
-      // standalone 模式下 dispose 会 revoke 本页 blob URL
-      handle.dispose();
-      this.slideHandles.delete(chapterDocIndex);
-    }
     if (subDoc) {
       subDoc.body.innerHTML = "";
     }
   }
   /**
-   * PPTX 所有页面共用 presentation.xml 中的统一页面尺寸，
+   * 演示文稿所有页面共用 presentation.xml 中的统一页面尺寸，
    * width/height 已换算为像素，直接相除得宽高比。
    */
   async getTemplateAspectRatio() {
@@ -170,6 +142,13 @@ class PptxRender extends ComicRender {
   // 页面 DOM 由渲染器实时生成，无静态 HTML 可缓存，返回空表示不支持预缓存
   async preCache() {
     return "";
+  }
+  // 关闭书籍时释放解析产生的全部 blob URL；再次 renderTo 会重新 parse
+  removeContent() {
+    super.removeContent();
+    this.presentation?.dispose?.();
+    this.presentation = null;
+    this.book = "";
   }
   async getMetadata() {
     return new Promise<any>(async (resolve, reject) => {
@@ -193,38 +172,44 @@ class PptxRender extends ComicRender {
       }
     });
   }
+  // 文本索引来自解析模型，未渲染的页也能检索；结果按行去重
   async doSearch(keyword: string): Promise<any[]> {
     const presentation = this.presentation;
     if (!presentation || !keyword) return [];
     try {
-      const results: TextSearchResult[] = searchPresentation(
-        presentation,
-        keyword
-      );
-      const count = presentation.slides.length || 1;
-      return results.map((result) => {
-        const slideIndex = result.slideIndex;
-        return {
-          excerpt: result.snippet,
-          cfi: JSON.stringify({
-            text: result.text,
-            chapterTitle:
-              this.chapterDocList[slideIndex]?.label ||
-              "Slide " + (slideIndex + 1),
-            chapterDocIndex: slideIndex,
-            chapterHref: this.chapterDocList[slideIndex]?.href || "",
-            count: "search",
-            percentage: slideIndex / count,
-            keyword: keyword,
-          }),
-        };
+      const results: any[] = [];
+      const count = this.chapterDocList.length || presentation.slides.length || 1;
+      const lowerKeyword = keyword.toLowerCase();
+      presentation.slides.forEach((slide, slideIndex) => {
+        const lines = slideText(slide).split("\n");
+        for (const line of lines) {
+          const text = line.trim();
+          if (!text || text.toLowerCase().indexOf(lowerKeyword) === -1) {
+            continue;
+          }
+          results.push({
+            excerpt: text,
+            cfi: JSON.stringify({
+              text: text,
+              chapterTitle:
+                this.chapterDocList[slideIndex]?.label ||
+                "Slide " + (slideIndex + 1),
+              chapterDocIndex: slideIndex,
+              chapterHref: this.chapterDocList[slideIndex]?.href || "",
+              count: "search",
+              percentage: slideIndex / count,
+              keyword: keyword,
+            }),
+          });
+        }
       });
+      return results;
     } catch (error) {
       console.error(error);
       return [];
     }
   }
-  // 朗读/文本提取：取当前页已渲染 iframe 的文本内容
+  // 朗读/文本提取：取当前页已渲染 iframe 的可见文本
   async getCurrentSlideText(): Promise<string[]> {
     const chapterDocIndex = parseInt(this.tempLocation.chapterDocIndex || "0");
     if (isNaN(chapterDocIndex) || chapterDocIndex < 0) return [];
