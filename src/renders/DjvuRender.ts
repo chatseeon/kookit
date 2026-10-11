@@ -470,7 +470,10 @@ class DjvuRender extends ComicRender {
       const text = subDoc.createElementNS("http://www.w3.org/2000/svg", "text");
       text.setAttribute("x", String(rect.x));
       text.setAttribute("y", String(rect.y + rect.height * 0.8));
-      text.setAttribute("font-size", String(Math.max(1, rect.height * 0.8)));
+      text.setAttribute("font-size", String(Math.max(1, rect.height)));
+      // 让文本宽度精确等于 zone 宽度，选区高亮才与页面图像上的文字对齐
+      text.setAttribute("textLength", String(Math.max(1, rect.width)));
+      text.setAttribute("lengthAdjust", "spacingAndGlyphs");
       text.setAttribute("fill", "transparent");
       text.setAttribute("style", "user-select:text;cursor:text;");
       text.textContent = zone.text;

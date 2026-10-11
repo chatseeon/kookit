@@ -496,8 +496,19 @@ export class DjvuFile {
         console.error(error);
       }
     }
+    // area 坐标（zone 与注释）在文件里是自下而上的，对外统一转换到左上原点
+    for (const zone of layer.zones) {
+      this.flipZoneToTopOrigin(zone, page.info.height);
+    }
     this.textCache.set(index, layer);
     return layer;
+  }
+
+  private flipZoneToTopOrigin(zone: DjvuTextZone, pageHeight: number): void {
+    zone.y = pageHeight - (zone.y + zone.height);
+    for (const child of zone.children) {
+      this.flipZoneToTopOrigin(child, pageHeight);
+    }
   }
 
   getPageText(index: number): string {
@@ -526,6 +537,17 @@ export class DjvuFile {
     collect(page.includedChunks);
     collect(page.chunks);
     const set = parseAnnotations(text);
+    // 注释的矩形同样自下而上，转换到左上原点
+    for (const annotation of set.annotations) {
+      const shape = annotation.shape;
+      if (!shape) continue;
+      shape.y = page.info.height - (shape.y + shape.height);
+      if (shape.kind === "poly" && shape.points) {
+        for (let i = 1; i < shape.points.length; i += 2) {
+          shape.points[i] = page.info.height - shape.points[i];
+        }
+      }
+    }
     this.annotationCache.set(index, set);
     return set;
   }

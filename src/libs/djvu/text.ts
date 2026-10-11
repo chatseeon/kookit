@@ -18,6 +18,8 @@ export type DjvuTextZoneType =
   | "word"
   | "character";
 
+// 文本 zone。注意：文件里的 zone 坐标是自下而上的（与其他 DjVu 图像数据一致），
+// DjvuFile.getPageTextZones() 已统一转换为左上原点，叠加到页面上时无需再翻转。
 export interface DjvuTextZone {
   type: DjvuTextZoneType;
   x: number;
