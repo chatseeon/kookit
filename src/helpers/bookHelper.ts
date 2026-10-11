@@ -104,6 +104,9 @@ class BookHelper {
     } else if (format === "XPS" || format === "OXPS") {
       // XPS/OXPS 为固定版式文档，逐页渲染为 SVG，沿用漫画的多 iframe 分页结构
       rendition = new Kookit.XpsRender(copyArrayBuffer(result), config);
+    } else if (format === "DJVU" || format === "DJV") {
+      // DjVu 为固定版式文档（MRC 位图），逐页解码合成为 canvas，沿用漫画的多 iframe 分页结构
+      rendition = new Kookit.DjvuRender(copyArrayBuffer(result), config);
     }
     return rendition;
   };
@@ -160,6 +163,8 @@ class BookHelper {
           case "pptx":
           case "xps":
           case "oxps":
+          case "djvu":
+          case "djv":
             metadata = await rendition.getMetadata();
             cover = metadata.cover;
             break;
