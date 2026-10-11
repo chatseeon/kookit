@@ -1,7 +1,7 @@
 import ComicRender from "./ComicRender";
 import JSZip from "jszip";
 import { createPDFIframe } from "../utils/pdfUtil.js";
-import { parse, renderSlideToSvg, slideText } from "@web-ppt/core";
+import { parse, renderSlideToSvg, slideText, slideToPng } from "@web-ppt/core";
 import type { Presentation } from "@web-ppt/core";
 
 // PPTX/PPT 逐页经 @web-ppt/core 渲染为 SVG DOM 后直接挂进每页 iframe，
@@ -60,21 +60,45 @@ class PptxRender extends ComicRender {
       throw error;
     }
   }
-  // OOXML 保存时若嵌入缩略图（docProps/thumbnail.*），直接作为封面；
-  // .ppt 无该条目时返回空由调用方兜底
+  // OOXML 保存时若嵌入缩略图（docProps/thumbnail.*），直接作为封面。
+  // .ppt 是 CFB 容器，没有该条目，跳过 zip 解析
   async getCoverBlob(): Promise<Blob | null> {
-    try {
-      const zip = await JSZip.loadAsync(this.comicBuffer);
-      for (const name of ["docProps/thumbnail.jpeg", "docProps/thumbnail.png"]) {
-        const entry = zip.file(name);
-        if (entry) {
-          return await entry.async("blob");
+    const bytes = new Uint8Array(this.comicBuffer);
+    if (bytes[0] === 0x50 && bytes[1] === 0x4b) {
+      try {
+        const zip = await JSZip.loadAsync(this.comicBuffer);
+        for (const name of [
+          "docProps/thumbnail.jpeg",
+          "docProps/thumbnail.png",
+        ]) {
+          const entry = zip.file(name);
+          if (entry) {
+            return await entry.async("blob");
+          }
         }
+      } catch (error) {
+        console.error(error);
       }
+    }
+    return await this.renderSlideCover();
+  }
+  // 没有嵌入缩略图（.ppt 全部如此，pptx 也常常不存）时把第 1 页栅格化为封面。
+  // scale 0.5 取约 640px 宽的位图，作为封面足够且不让 base64 数据过大
+  async renderSlideCover(): Promise<Blob | null> {
+    try {
+      if (!this.presentation) {
+        await this.parse();
+      }
+      const presentation = this.presentation;
+      const slide = presentation?.slides[0];
+      if (!presentation || !slide) {
+        return null;
+      }
+      return await slideToPng(presentation, slide, 0.5);
     } catch (error) {
       console.error(error);
+      return null;
     }
-    return null;
   }
   /**
    * 覆写漫画的页面渲染：把 renderSlideToSvg 输出的整页 SVG 挂进

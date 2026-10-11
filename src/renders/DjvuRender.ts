@@ -433,6 +433,93 @@ class DjvuRender extends ComicRender {
     }
   }
 
+  // 计算每行的显示矩形与行内各词的矩形。部分 DjVu 文件的 word 级盒子不可用
+  // （整行共用一个盒子，宽度合计远超父框），此时按实测文本宽度在父框内重新排布，
+  // 使每个词的选区仍落在词宽范围内（否则整行都会被选中）
+  private layoutLines(
+    zones: any[],
+    measure?: (text: string, fontSize: number) => number
+  ): {
+    key: string;
+    words: { zone: any; x: number; y: number; width: number; height: number }[];
+  }[] {
+    const lines: {
+      key: string;
+      words: { zone: any; x: number; y: number; width: number; height: number }[];
+    }[] = [];
+    let counter = 0;
+    const visit = (node: any) => {
+      const children: any[] = node.children || [];
+      if (children.length === 0) return;
+      const totalWidth = children.reduce(
+        (sum, child) => sum + Math.max(0, child.width),
+        0
+      );
+      // 仅当子节点同处一行、且宽度合计装不进父框时，才认为盒子不可用
+      // （段落/区域等跨行的层级宽度合计天然会超出，不能用同一判据）
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (const child of children) {
+        if (child.y < minY) minY = child.y;
+        if (child.y > maxY) maxY = child.y;
+      }
+      const sameRow = maxY - minY <= Math.max(1, node.height) * 0.5;
+      const relayout =
+        children.length > 1 && sameRow && totalWidth > node.width * 1.5;
+      let weights: number[] = [];
+      let totalWeight = 0;
+      if (relayout) {
+        weights = children.map((child) => {
+          const text = child.text || "";
+          const measured = measure ? measure(text, node.height) : 0;
+          const weight = measured > 0 ? measured : Math.max(1, text.length) * 0.5;
+          return Math.max(0.5, weight);
+        });
+        totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+      }
+      const words: { zone: any; x: number; y: number; width: number; height: number }[] = [];
+      let cursor = node.x;
+      for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        let x = child.x;
+        let y = child.y;
+        let width = child.width;
+        let height = child.height;
+        if (relayout) {
+          width = (weights[i] / totalWeight) * node.width;
+          x = cursor;
+          y = node.y;
+          height = node.height;
+          cursor += width;
+        }
+        if (child.children && child.children.length > 0) {
+          visit({ ...child, x, y, width, height });
+        } else if (width > 0 && height > 0 && child.text && child.text.trim()) {
+          words.push({ zone: child, x, y, width, height });
+        }
+      }
+      if (words.length > 0) {
+        // 同一视觉行上的相邻行段（部分文件的 line 会被切成多段）合并，
+        // 复制文本时不会在行中间插换行
+        const prev = lines.length > 0 ? lines[lines.length - 1] : null;
+        if (prev) {
+          const prevTop = Math.min(...prev.words.map((w) => w.y));
+          const top = Math.min(...words.map((w) => w.y));
+          const height = Math.max(...words.map((w) => w.height));
+          const sameRow = Math.abs(top - prevTop) < Math.max(1, height) * 0.5;
+          if (sameRow) {
+            // 行内按 x 排序后拼接，保证复制顺序与视觉顺序一致
+            prev.words = prev.words.concat(words).sort((a, b) => a.x - b.x);
+            return;
+          }
+        }
+        lines.push({ key: "line-" + counter++, words });
+      }
+    };
+    for (const zone of zones) visit(zone);
+    return lines;
+  }
+
   // 隐藏文本层：在共用 overlay SVG 中加 <text>，随页面一同缩放，支持选文/复制
   private addTextLayer(subDoc: any, svg: any, chapterDocIndex: number) {
     const djvu = this.djvu;
@@ -447,36 +534,66 @@ class DjvuRender extends ComicRender {
     if (!zones || zones.length === 0) {
       return;
     }
-    const flat: any[] = [];
-    const walk = (list: any[]) => {
-      for (const zone of list) {
-        if (zone.children && zone.children.length > 0) walk(zone.children);
-        else if (zone.text && zone.text.trim()) flat.push(zone);
+    // 文本宽度实测（用于词块重排的比例分配），失败时退化为按字符数估算
+    let measure: ((text: string, fontSize: number) => number) | undefined;
+    try {
+      const measureCtx = subDoc.createElement("canvas").getContext("2d");
+      if (measureCtx) {
+        const cache = new Map<string, number>();
+        measure = (text: string, fontSize: number) => {
+          const key = fontSize + "\u0000" + text;
+          const cached = cache.get(key);
+          if (cached !== undefined) return cached;
+          measureCtx.font = fontSize + "px serif";
+          const width = measureCtx.measureText(text).width;
+          cache.set(key, width);
+          return width;
+        };
       }
-    };
-    walk(zones);
-    if (flat.length === 0) return;
+    } catch (error) {
+      console.error(error);
+    }
+    const lines = this.layoutLines(zones, measure);
+    if (lines.length === 0) return;
     const info = djvu.getPageInfo(chapterDocIndex);
-    for (const zone of flat) {
-      const rect = this.mapRect(
-        zone.x,
-        zone.y,
-        zone.width,
-        zone.height,
+    const SVG_NS = "http://www.w3.org/2000/svg";
+    for (const line of lines) {
+      // 一行一个 <text>，行内各词用 <tspan>：选区复制时不会逐词换行
+      const text = subDoc.createElementNS(SVG_NS, "text");
+      text.setAttribute("data-djvu-line", line.key);
+      const first = this.mapRect(
+        line.words[0].x,
+        line.words[0].y,
+        line.words[0].width,
+        line.words[0].height,
         info.width,
         info.height,
         info.rotation
       );
-      const text = subDoc.createElementNS("http://www.w3.org/2000/svg", "text");
-      text.setAttribute("x", String(rect.x));
-      text.setAttribute("y", String(rect.y + rect.height * 0.8));
-      text.setAttribute("font-size", String(Math.max(1, rect.height)));
-      // 让文本宽度精确等于 zone 宽度，选区高亮才与页面图像上的文字对齐
-      text.setAttribute("textLength", String(Math.max(1, rect.width)));
-      text.setAttribute("lengthAdjust", "spacingAndGlyphs");
-      text.setAttribute("fill", "transparent");
-      text.setAttribute("style", "user-select:text;cursor:text;");
-      text.textContent = zone.text;
+      text.setAttribute("x", String(first.x));
+      text.setAttribute("y", String(first.y + first.height * 0.8));
+      for (const word of line.words) {
+        const rect = this.mapRect(
+          word.x,
+          word.y,
+          word.width,
+          word.height,
+          info.width,
+          info.height,
+          info.rotation
+        );
+        const tspan = subDoc.createElementNS(SVG_NS, "tspan");
+        tspan.setAttribute("x", String(rect.x));
+        tspan.setAttribute("y", String(rect.y + rect.height * 0.8));
+        tspan.setAttribute("font-size", String(Math.max(1, rect.height)));
+        // 词宽精确等于 zone 宽度，选区高亮才与页面图像上的文字对齐
+        tspan.setAttribute("textLength", String(Math.max(1, rect.width)));
+        tspan.setAttribute("lengthAdjust", "spacingAndGlyphs");
+        tspan.setAttribute("fill", "transparent");
+        tspan.setAttribute("style", "user-select:text;cursor:text;");
+        tspan.textContent = word.zone.text;
+        text.appendChild(tspan);
+      }
       svg.appendChild(text);
     }
   }
