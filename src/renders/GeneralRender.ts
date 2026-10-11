@@ -1279,6 +1279,7 @@ class GeneralRender extends EventEmitter {
     TXT: 1.5,
     MD: 2,
     DOCX: 2.5,
+    DOC: 2.5,
     HTML: 3,
     MHTML: 3,
     XHTML: 3,

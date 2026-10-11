@@ -11,6 +11,7 @@ import Fb2Render from "./renders/Fb2Render";
 import ChmRender from "./renders/ChmRender";
 import CacheRender from "./renders/CacheRender";
 import DocxRender from "./renders/DocxRender";
+import DocRender from "./renders/DocRender";
 import RtfRender from "./renders/RtfRender";
 import MdRender from "./renders/MdRender";
 import HtmlRender from "./renders/HtmlRender";
@@ -30,6 +31,7 @@ export {
   Fb2Render,
   ChmRender,
   DocxRender,
+  DocRender,
   RtfRender,
   MdRender,
   HtmlRender,

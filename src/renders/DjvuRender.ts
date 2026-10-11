@@ -12,8 +12,14 @@ import {
 // 多 iframe 结构；解码按 chunk 分片进行并让出主线程，先出低质量预览再精修。
 class DjvuRender extends ComicRender {
   djvu: DjvuFile | null = null;
-  private renderingPages: Map<number, Promise<void>> = new Map();
+  // 每页的渲染状态：generation 用于取消，painted 标记完成，task 记录在途任务
+  private pageState: Map<
+    number,
+    { generation: number; painted: boolean; task: Promise<void> | null }
+  > = new Map();
   private pageGenerations: Map<number, number> = new Map();
+  // 每页最终展示图片的 blob URL（卸载时释放）
+  private pageImageUrls: Map<number, string> = new Map();
   private coverBlob: Blob | null = null;
 
   async parse() {
@@ -182,19 +188,32 @@ class DjvuRender extends ComicRender {
     }
     let subDoc: any = subIframe?.contentDocument;
     if (!subDoc) return;
-    if (subDoc.body.querySelector("canvas")) {
+    let state = this.pageState.get(chapterDocIndex);
+    if (!state) {
+      state = { generation: 0, painted: false, task: null };
+      this.pageState.set(chapterDocIndex, state);
+    }
+    // 已完成且页面 DOM 仍在（未被清空）时无需重复渲染。
+    // 只依据渲染状态判断，避免“渲染被取消后 DOM 里残留 canvas 导致永不再渲染”
+    if (
+      state.painted &&
+      this.isGenerationCurrent(chapterDocIndex, state.generation) &&
+      subDoc.body.querySelector("[data-djvu-page]")
+    ) {
       return;
     }
-    const existing = this.renderingPages.get(chapterDocIndex);
-    if (existing) {
-      return existing;
+    // 同一代的在途任务直接复用，避免重复解码
+    if (state.task) {
+      return state.task;
     }
-    const task = this.renderPage(chapterDocIndex, subDoc);
-    this.renderingPages.set(chapterDocIndex, task);
+    const task = this.renderPage(chapterDocIndex, subDoc, state);
+    state.task = task;
     try {
       await task;
     } finally {
-      this.renderingPages.delete(chapterDocIndex);
+      if (state.task === task) {
+        state.task = null;
+      }
     }
   }
 
@@ -202,41 +221,57 @@ class DjvuRender extends ComicRender {
     return (this.pageGenerations.get(chapterDocIndex) || 0) === generation;
   }
 
-  private async renderPage(chapterDocIndex: number, subDoc: any) {
+  private async renderPage(
+    chapterDocIndex: number,
+    subDoc: any,
+    state: { generation: number; painted: boolean; task: Promise<void> | null }
+  ) {
     const djvu = this.djvu;
     if (!djvu) return;
     const generation = (this.pageGenerations.get(chapterDocIndex) || 0) + 1;
     this.pageGenerations.set(chapterDocIndex, generation);
+    state.generation = generation;
+    state.painted = false;
     try {
       const page = djvu.getPage(chapterDocIndex);
-      // 页面骨架：居中 + 比例盒 + canvas + 文本/注释层
       const rotated = page.info.rotation % 2 === 1;
       const displayWidth = rotated ? page.info.height : page.info.width;
       const displayHeight = rotated ? page.info.width : page.info.height;
-      const wrapper = subDoc.createElement("div");
-      wrapper.style.cssText =
-        "width:100%;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;";
-      const box = subDoc.createElement("div");
-      box.style.cssText = `position:relative;width:100%;aspect-ratio:${displayWidth} / ${displayHeight};max-width:100%;max-height:100%;`;
-      const canvas = subDoc.createElement("canvas");
-      canvas.style.cssText =
-        "position:absolute;top:0;left:0;width:100%;height:100%;display:block;";
-      box.appendChild(canvas);
-      wrapper.appendChild(box);
+
+      // 每次渲染都重建页面 DOM，避免残留上一次的半成品或旧内容
       subDoc.body.style.margin = "0";
       subDoc.body.style.height = "100%";
+      subDoc.body.style.overflow = "hidden";
       subDoc.documentElement.style.height = "100%";
-      if (!subDoc.body.firstChild) {
-        subDoc.body.appendChild(wrapper);
+      subDoc.body.innerHTML = "";
+
+      // 页面容器：图片用 object-fit:contain 自适应，文本/注释层用同样比例的
+      // SVG（preserveAspectRatio=xMidYMid meet），两者缩放完全一致
+      const wrapper = subDoc.createElement("div");
+      wrapper.setAttribute("data-djvu-page", "1");
+      wrapper.style.cssText =
+        "position:absolute;top:0;left:0;right:0;bottom:0;overflow:hidden;";
+      const canvas = subDoc.createElement("canvas");
+      canvas.style.cssText =
+        "position:absolute;top:0;left:0;right:0;bottom:0;margin:auto;max-width:100%;max-height:100%;display:block;";
+      canvas.width = displayWidth;
+      canvas.height = displayHeight;
+      const canvasCtx = canvas.getContext("2d");
+      if (canvasCtx) {
+        // 先铺白底，渲染过程中也不会出现透明空洞
+        canvasCtx.fillStyle = "#ffffff";
+        canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
       }
+      wrapper.appendChild(canvas);
+      subDoc.body.appendChild(wrapper);
 
       const decoder = new DjvuPageDecoder(page, djvu.getData());
+      // 存活判定以页面容器为准：图片替换 canvas 之后容器仍然存在
       const isAlive = () =>
         this.isGenerationCurrent(chapterDocIndex, generation) &&
         !!subDoc.body &&
-        !!canvas.parentNode;
+        !!wrapper.parentNode;
       let lastPaint = 0;
-      let painted = false;
       for (;;) {
         const step = await decoder.decodeNext();
         if (step === null) break;
@@ -244,25 +279,107 @@ class DjvuRender extends ComicRender {
         const now = Date.now();
         if (step === "mask" || now - lastPaint >= 80) {
           this.paintPage(canvas, decoder.composeToRgba());
-          painted = true;
           lastPaint = now;
           await yieldToMainThread();
         }
       }
       if (!isAlive()) return;
-      const image = decoder.composeToRgba();
-      if (!painted || image.width !== canvas.width) {
-        this.paintPage(canvas, image);
+      this.paintPage(canvas, decoder.composeToRgba());
+
+      // 文本与注释叠加层
+      const svg = subDoc.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", `0 0 ${displayWidth} ${displayHeight}`);
+      svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+      svg.style.cssText =
+        "position:absolute;top:0;left:0;right:0;bottom:0;width:100%;height:100%;overflow:visible;";
+      wrapper.appendChild(svg);
+      this.addTextLayer(subDoc, svg, chapterDocIndex);
+      this.addAnnotationLayer(subDoc, svg, chapterDocIndex);
+
+      // 页面里没有任何可显示的图像层时给出明确提示，而不是留一张白纸
+      const decoded = decoder.decodeState;
+      if (
+        !decoded.mask &&
+        !decoded.background &&
+        !decoded.foreground &&
+        !decoded.fgbz &&
+        !decoded.jpegBackground &&
+        !decoded.jpegForeground
+      ) {
+        const notice = subDoc.createElement("div");
+        notice.style.cssText =
+          "position:absolute;left:8%;right:8%;top:46%;text-align:center;color:#999;font:13px/1.6 sans-serif;";
+        notice.textContent =
+          "Unsupported DjVu page content: " +
+          page.chunks.map((chunk) => chunk.id).join(",");
+        wrapper.appendChild(notice);
       }
-      this.addTextLayer(subDoc, box, chapterDocIndex);
-      this.addAnnotationLayer(subDoc, box, chapterDocIndex);
+
+      // 最终用 <img> 展示（与漫画渲染一致，浏览器对图片的绘制最稳定），
+      // canvas 仅作为渐进预览，转换完成后即可释放
+      await this.swapToImage(subDoc, wrapper, canvas, chapterDocIndex, generation);
+      if (!isAlive()) return;
+      state.painted = true;
       this.trigger("rendered", [chapterDocIndex] as any);
     } catch (error) {
       console.error(error);
-      if (subDoc && subDoc.body && !subDoc.body.querySelector("canvas")) {
-        subDoc.body.textContent = "Failed to render DjVu page";
+      if (subDoc && subDoc.body) {
+        const failed = subDoc.createElement("div");
+        failed.style.cssText =
+          "position:absolute;left:0;right:0;top:46%;text-align:center;color:#999;font:13px sans-serif;";
+        failed.textContent = "Failed to render DjVu page";
+        subDoc.body.appendChild(failed);
       }
     }
+  }
+
+  // 把 canvas 转成 blob URL 并用 <img> 替换，作为页面的最终展示层。
+  // 图片加载成功后才移除 canvas（canvas 作为兜底显示层，失败时页面仍可见）
+  private async swapToImage(
+    subDoc: any,
+    wrapper: any,
+    canvas: HTMLCanvasElement,
+    chapterDocIndex: number,
+    generation: number
+  ): Promise<void> {
+    let blob: Blob | null = null;
+    try {
+      if (typeof canvas.toBlob === "function") {
+        blob = await new Promise<Blob | null>((resolve) =>
+          canvas.toBlob((result) => resolve(result), "image/png")
+        );
+      }
+    } catch (error) {
+      console.error(error);
+    }
+    if (!blob) return;
+    if (!this.isGenerationCurrent(chapterDocIndex, generation) || !canvas.parentNode) {
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const previous = this.pageImageUrls.get(chapterDocIndex);
+    this.pageImageUrls.set(chapterDocIndex, url);
+    if (previous) {
+      URL.revokeObjectURL(previous);
+    }
+    const image = subDoc.createElement("img");
+    image.setAttribute("data-djvu-image", "1");
+    image.src = url;
+    image.style.cssText =
+      "position:absolute;top:0;left:0;right:0;bottom:0;margin:auto;max-width:100%;max-height:100%;display:block;";
+    image.onload = () => {
+      if (canvas.parentNode) {
+        canvas.remove();
+      }
+    };
+    image.onerror = () => {
+      image.remove();
+      if (this.pageImageUrls.get(chapterDocIndex) === url) {
+        this.pageImageUrls.delete(chapterDocIndex);
+      }
+      URL.revokeObjectURL(url);
+    };
+    wrapper.insertBefore(image, canvas);
   }
 
   private paintPage(canvas: HTMLCanvasElement, image: DjvuPageImage) {
@@ -316,8 +433,8 @@ class DjvuRender extends ComicRender {
     }
   }
 
-  // 隐藏文本层：SVG overlay，随容器缩放自动对齐，支持选文/复制
-  private addTextLayer(subDoc: any, box: any, chapterDocIndex: number) {
+  // 隐藏文本层：在共用 overlay SVG 中加 <text>，随页面一同缩放，支持选文/复制
+  private addTextLayer(subDoc: any, svg: any, chapterDocIndex: number) {
     const djvu = this.djvu;
     if (!djvu || !subDoc.createElementNS) return;
     let zones: any[] = [];
@@ -340,13 +457,6 @@ class DjvuRender extends ComicRender {
     walk(zones);
     if (flat.length === 0) return;
     const info = djvu.getPageInfo(chapterDocIndex);
-    const displayWidth = info.rotation % 2 === 1 ? info.height : info.width;
-    const displayHeight = info.rotation % 2 === 1 ? info.width : info.height;
-    const svg = subDoc.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("viewBox", `0 0 ${displayWidth} ${displayHeight}`);
-    svg.setAttribute("preserveAspectRatio", "none");
-    svg.style.cssText =
-      "position:absolute;top:0;left:0;width:100%;height:100%;overflow:visible;";
     for (const zone of flat) {
       const rect = this.mapRect(
         zone.x,
@@ -366,11 +476,10 @@ class DjvuRender extends ComicRender {
       text.textContent = zone.text;
       svg.appendChild(text);
     }
-    box.appendChild(svg);
   }
 
-  // 注释层：带 href 属性的透明元素，复用 touchUtil 的链接跳转机制
-  private addAnnotationLayer(subDoc: any, box: any, chapterDocIndex: number) {
+  // 注释层：透明 SVG 热区，带 href 属性以复用 touchUtil 的链接跳转机制
+  private addAnnotationLayer(subDoc: any, svg: any, chapterDocIndex: number) {
     const djvu = this.djvu;
     if (!djvu) return;
     let annotations: any[] = [];
@@ -394,15 +503,17 @@ class DjvuRender extends ComicRender {
         info.height,
         info.rotation
       );
-      const link = subDoc.createElement("div");
+      const link = subDoc.createElementNS("http://www.w3.org/2000/svg", "rect");
+      link.setAttribute("x", String(rect.x));
+      link.setAttribute("y", String(rect.y));
+      link.setAttribute("width", String(Math.max(1, rect.width)));
+      link.setAttribute("height", String(Math.max(1, rect.height)));
+      link.setAttribute("fill", "transparent");
+      link.setAttribute("pointer-events", "all");
       link.setAttribute("href", annotation.url);
       if (annotation.comment) link.setAttribute("title", annotation.comment);
-      link.style.cssText = `position:absolute;left:${(rect.x / info.width) * 100}%;top:${
-        (rect.y / info.height) * 100
-      }%;width:${(rect.width / info.width) * 100}%;height:${
-        (rect.height / info.height) * 100
-      }%;cursor:pointer;background:transparent;`;
-      box.appendChild(link);
+      link.setAttribute("style", "cursor:pointer;");
+      svg.appendChild(link);
     }
   }
 
@@ -410,11 +521,20 @@ class DjvuRender extends ComicRender {
     if (chapterDocIndex >= this.chapterDocList.length || chapterDocIndex < 0) {
       return;
     }
-    // 递增 generation，终止进行中的解码
+    // 递增 generation，终止进行中的解码，并清掉渲染状态（下次访问会重新渲染）
     this.pageGenerations.set(
       chapterDocIndex,
       (this.pageGenerations.get(chapterDocIndex) || 0) + 1
     );
+    const state = this.pageState.get(chapterDocIndex);
+    if (state) {
+      state.painted = false;
+    }
+    const url = this.pageImageUrls.get(chapterDocIndex);
+    if (url) {
+      URL.revokeObjectURL(url);
+      this.pageImageUrls.delete(chapterDocIndex);
+    }
     const subDoc = this.getSubDocument(chapterDocIndex);
     if (subDoc && subDoc.body.innerHTML) {
       subDoc.body.innerHTML = "";
@@ -552,31 +672,35 @@ class DjvuRender extends ComicRender {
     for (const pageIndex of indices) {
       if (pageIndex > this.chapterDocList.length - 1) continue;
       try {
-        const subDoc = this.getSubDocument(pageIndex);
-        const canvas = subDoc?.querySelector("canvas");
-        if (canvas) {
-          urls.push((canvas as HTMLCanvasElement).toDataURL("image/jpeg", 0.85));
+        // 已渲染过的页面直接复用其图片 URL，避免再次编码
+        const cached = this.pageImageUrls.get(pageIndex);
+        if (cached) {
+          urls.push(cached);
           continue;
         }
         const image = await this.renderPageImage(pageIndex);
-        if (image) {
-          const canvas = document.createElement("canvas");
-          canvas.width = image.width;
-          canvas.height = image.height;
-          const ctx = canvas.getContext("2d");
-          if (ctx) {
-            ctx.putImageData(
-              new ImageData(
-                new Uint8ClampedArray(image.rgba),
-                image.width,
-                image.height
-              ),
-              0,
-              0
-            );
-            urls.push(canvas.toDataURL("image/jpeg", 0.85));
-          }
+        if (!image) continue;
+        const canvas = document.createElement("canvas");
+        canvas.width = image.width;
+        canvas.height = image.height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) continue;
+        ctx.putImageData(
+          new ImageData(new Uint8ClampedArray(image.rgba), image.width, image.height),
+          0,
+          0
+        );
+        const blob = await new Promise<Blob | null>((resolve) =>
+          canvas.toBlob((result) => resolve(result), "image/png")
+        );
+        if (!blob) continue;
+        const url = URL.createObjectURL(blob);
+        const previous = this.pageImageUrls.get(pageIndex);
+        this.pageImageUrls.set(pageIndex, url);
+        if (previous) {
+          URL.revokeObjectURL(previous);
         }
+        urls.push(url);
       } catch (error) {
         console.error(error);
       }
