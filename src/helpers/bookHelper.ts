@@ -81,6 +81,8 @@ class BookHelper {
       rendition = new Kookit.ChmRender(result, config);
     } else if (format === "DOCX") {
       rendition = new Kookit.DocxRender(result, config);
+    } else if (format === "RTF") {
+      rendition = new Kookit.RtfRender(result, config);
     } else if (
       format === "HTML" ||
       format === "XHTML" ||

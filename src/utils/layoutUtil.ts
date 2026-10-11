@@ -725,8 +725,15 @@ export const handleImageSize = async (
     }
 
     if (isSvgImage) {
-      item.parentElement?.setAttribute("width", maxWidth);
-      item.parentElement?.setAttribute("height", maxHeight);
+      // rtf.js 的 WMF/EMF 图片为嵌套 svg 结构（外层 svg 带 viewBox，内层 svg
+      // 承载位图），尺寸需写到最外层 svg，否则内层 svg 的宽高会被当作外层
+      // viewBox 的用户单位，图片会缩小到几乎不可见
+      let svgRoot = item.parentElement;
+      while (svgRoot && svgRoot.parentElement?.tagName === "svg") {
+        svgRoot = svgRoot.parentElement;
+      }
+      svgRoot?.setAttribute("width", maxWidth);
+      svgRoot?.setAttribute("height", maxHeight);
     }
 
     // CB non-scroll: margin-left needs live clientWidth after styles are applied

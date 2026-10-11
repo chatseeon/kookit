@@ -7,7 +7,12 @@ import esbuild from "rollup-plugin-esbuild";
 import path from "path";
 // watch（yarn dev）时 terser 只做去注释（compress: false），加快重编译；
 // 注释必须移除：依赖产物中的 eslint-disable 注释会让宿主项目 ESLint 报
-// "Definition for rule ... was not found"
+// "Definition for rule ... was not found"。
+// 例外：@zip.js/zip.js 的 codec-registry.js 中有
+// `import(/* webpackIgnore: true */ /* @vite-ignore */ codecURI)`，
+// 保留这两个魔法注释才能避免宿主项目 webpack 报
+// "Critical dependency: the request of a dependency is an expression"
+const keepMagicComments = /webpackIgnore|@vite-ignore/;
 const isWatch = process.env.ROLLUP_WATCH === "true";
 const terserPlugin = () =>
   terser(
@@ -15,11 +20,11 @@ const terserPlugin = () =>
       ? {
           compress: false,
           mangle: false,
-          format: { comments: false },
+          format: { comments: keepMagicComments },
         }
       : {
           format: {
-            comments: false, // 移除所有注释
+            comments: keepMagicComments, // 仅保留 webpack/vite 魔法注释
           },
           mangle: false,
         }

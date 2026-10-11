@@ -1,6 +1,10 @@
 import Chapter from "../model/chapter";
 import ChapterDoc from "../model/chapterDoc";
-import { createIframe } from "../utils/layoutUtil";
+import {
+  createIframe,
+  getActualOffsetLeft,
+  getActualOffsetTop,
+} from "../utils/layoutUtil";
 import GeneralParser from "../utils/generalParser";
 import { makeComicBook } from "../libs/comic-book";
 import GeneralRender from "./GeneralRender";
@@ -934,7 +938,7 @@ class ComicRender extends GeneralRender {
       currentPage: parseInt(this.tempLocation.chapterDocIndex || "0") + 1,
     } as any;
   }
-  getPageSize() {
+  getPageSize(pageIndex?: number) {
     let doc: any = this.getDocument();
     if (!doc) return;
     let scale = this.readerMode === "double" ? 2 : 1;
@@ -942,9 +946,22 @@ class ComicRender extends GeneralRender {
     let gap = section % 2 === 0 ? section : section - 1;
     let subIframe = doc.querySelectorAll("iframe")[0];
     let iframeHeight = subIframe?.getBoundingClientRect().height;
+    // PPTX/XPS 等复用漫画结构的格式需要与 PDF 一致的位置信息来对齐选文菜单
+    let offsetTop = 0;
+    if (pageIndex !== undefined) {
+      let subContainer = doc.querySelector("#pdf-container-" + pageIndex);
+      if (subContainer) {
+        offsetTop = subContainer.getBoundingClientRect().top;
+      }
+    }
     return {
       width: doc.body.clientWidth,
       height: this.element.clientHeight,
+      left: getActualOffsetLeft(this.element),
+      top: getActualOffsetTop(this.element),
+      offsetTop: offsetTop,
+      scrollTop: this.element.scrollTop,
+      scrollLeft: this.element.scrollWidth / 2 - this.element.clientWidth / 2,
       sectionWidth: (doc.body.clientWidth - gap) / scale,
       sectionHeight: iframeHeight,
       gap: gap,

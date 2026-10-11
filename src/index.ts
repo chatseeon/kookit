@@ -10,6 +10,7 @@ import Fb2Render from "./renders/Fb2Render";
 import ChmRender from "./renders/ChmRender";
 import CacheRender from "./renders/CacheRender";
 import DocxRender from "./renders/DocxRender";
+import RtfRender from "./renders/RtfRender";
 import MdRender from "./renders/MdRender";
 import HtmlRender from "./renders/HtmlRender";
 import BookHelper from "./helpers/bookHelper";
@@ -27,6 +28,7 @@ export {
   Fb2Render,
   ChmRender,
   DocxRender,
+  RtfRender,
   MdRender,
   HtmlRender,
   BookHelper,
