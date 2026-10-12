@@ -69,6 +69,14 @@ const findNodesByTag = (root: any, tag: string): any[] => {
   return list;
 };
 
+// 字距列表里的最后一个正值（列表不足时用它补齐，与库的绘制行为一致）
+const lastPositive = (list: number[]): number => {
+  for (let index = list.length - 1; index >= 0; index--) {
+    if (list[index] > 0) return list[index];
+  }
+  return 0;
+};
+
 // "x y w h"（单位 mm）
 const parseStBox = (
   value: string
@@ -652,6 +660,10 @@ class OfdRender extends ComicRender {
         if (!text) continue;
         const deltaX = code.deltaX;
         const deltaY = code.deltaY;
+        // 部分生成器的字距列表比字符数短（如标题 11 个字只带一个 6.53），
+        // 库的绘制会重复最后一个正值，这里保持一致，否则后半段字符会堆叠
+        const fallbackX = lastPositive(deltaX);
+        const fallbackY = lastPositive(deltaY);
         let x = boundary.x + code.x;
         let y = boundary.y + code.y;
         let run: TextRun | null = null;
@@ -659,8 +671,13 @@ class OfdRender extends ComicRender {
           if (charCount >= MAX_TEXT_CHARS) break;
           charCount++;
           if (index > 0) {
-            if (deltaX.length) x += deltaX[index - 1] || 0;
-            if (deltaY.length) y += deltaY[index - 1] || 0;
+            const gapIndex = index - 1;
+            if (deltaX.length) {
+              x += gapIndex < deltaX.length ? deltaX[gapIndex] || 0 : fallbackX;
+            }
+            if (deltaY.length) {
+              y += gapIndex < deltaY.length ? deltaY[gapIndex] || 0 : fallbackY;
+            }
           }
           if (!run || Math.abs(run.y - y) > 0.2) {
             run = { y, size: sizeMm, ctm: object.ctm, chars: [] };
@@ -669,10 +686,11 @@ class OfdRender extends ComicRender {
           run.chars.push({
             char: text[index],
             x,
-            advance:
-              deltaX.length > 0
-                ? deltaX[Math.min(index, deltaX.length - 1)]
-                : 0,
+            advance: deltaX.length
+              ? index < deltaX.length
+                ? deltaX[index]
+                : fallbackX
+              : 0,
           });
         }
       }
