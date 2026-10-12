@@ -65,7 +65,8 @@ const waitForPageStable = (
       stableCount =
         fingerprint && fingerprint === lastFingerprint ? stableCount + 1 : 0;
       lastFingerprint = fingerprint;
-      if (stableCount >= 1 || Date.now() - startedAt > timeout) {
+      // 连续 3 次采样一致才认为绘制完成，给模板层等异步绘制留出余量
+      if (stableCount >= 2 || Date.now() - startedAt > timeout) {
         clearInterval(timer);
         resolve();
       }
@@ -120,6 +121,8 @@ class OfdRender extends ComicRender {
   liteOfd: any = null;
   ofdDocument: any = null;
   private renderingPages: Map<number, Promise<void>> = new Map();
+  // 每页最终展示图片的 blob URL（卸载时释放）
+  private pageImageUrls: Map<number, string> = new Map();
   private coverBlob: Blob | null = null;
 
   async parse() {
@@ -326,6 +329,9 @@ class OfdRender extends ComicRender {
       subDoc.body.appendChild(wrapper);
       // 跨文档 appendChild 自动 adopt；canvas 已在主文档绘制完成，位图保留
       wrapper.appendChild(pageEl);
+      // canvas 跨文档挂载后在分栏（single/double）布局下存在不绘制的问题，
+      // 统一转成 <img> 展示（与 DjvuRender 一致，浏览器对图片的绘制最稳定）
+      await this.swapCanvasToImage(chapterDocIndex, subDoc, pageEl);
       // 页面在 iframe 内完成布局后按实际尺寸等比适配（通常宽高比与容器一致）
       const pageW = pageEl.offsetWidth || box.width * scale;
       const pageH = pageEl.offsetHeight || box.height * scale;
@@ -346,16 +352,60 @@ class OfdRender extends ComicRender {
     }
   }
 
+  // 把绘制完成的页面 canvas 转成 blob 图片展示：canvas 跨文档挂载后在分栏
+  // 布局（single/double）下可能不被浏览器绘制，图片则没有这个问题；
+  // canvas 转换后即可移除，顺带释放其位图内存
+  private async swapCanvasToImage(
+    chapterDocIndex: number,
+    subDoc: any,
+    pageEl: HTMLElement
+  ) {
+    const canvas = pageEl.querySelector("canvas") as HTMLCanvasElement | null;
+    if (!canvas || !canvas.width || !canvas.height) {
+      return;
+    }
+    let blob: Blob | null = null;
+    try {
+      blob = await canvasToBlob(canvas);
+    } catch (error) {
+      console.error(error);
+    }
+    if (!blob) {
+      // 转换失败时保留 canvas 兜底（滚动模式下仍可正常展示）
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const previous = this.pageImageUrls.get(chapterDocIndex);
+    this.pageImageUrls.set(chapterDocIndex, url);
+    if (previous) {
+      URL.revokeObjectURL(previous);
+    }
+    const parent = canvas.parentNode;
+    if (!parent) return;
+    const image = subDoc.createElement("img");
+    image.setAttribute("data-ofd-page-image", "1");
+    image.src = url;
+    image.style.cssText =
+      `position:absolute;left:0;top:0;width:${canvas.offsetWidth || canvas.width}px;` +
+      `height:${canvas.offsetHeight || canvas.height}px;`;
+    parent.insertBefore(image, canvas);
+    canvas.remove();
+  }
+
   async handleUnloadComicChapter(chapterDocIndex: number) {
     if (chapterDocIndex >= this.chapterDocList.length || chapterDocIndex < 0) {
       return;
+    }
+    const url = this.pageImageUrls.get(chapterDocIndex);
+    if (url) {
+      URL.revokeObjectURL(url);
+      this.pageImageUrls.delete(chapterDocIndex);
     }
     let subDoc = this.getSubDocument(chapterDocIndex);
     if (subDoc && subDoc.body.innerHTML === "") {
       return;
     }
     if (subDoc) {
-      // canvas 随 DOM 断开由浏览器回收，无需额外释放
       subDoc.body.innerHTML = "";
     }
   }
@@ -383,6 +433,8 @@ class OfdRender extends ComicRender {
   // 关闭书籍时释放解析结果；再次 renderTo 会重新 parse
   removeContent() {
     super.removeContent();
+    this.pageImageUrls.forEach((url) => URL.revokeObjectURL(url));
+    this.pageImageUrls.clear();
     this.liteOfd = null;
     this.ofdDocument = null;
     this.coverBlob = null;
