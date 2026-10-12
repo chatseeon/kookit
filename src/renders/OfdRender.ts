@@ -22,6 +22,82 @@ const clampScale = (scale: number): number => {
   return Math.min(scale, MAX_RENDER_SCALE);
 };
 
+// 解析模型里的 OFD 标签名（优先取库导出的常量，缺失时回退到规范字面量）
+const OFD_TAGS = {
+  page: ofdKeys.Page || "ofd:Page",
+  content: ofdKeys.Content || "ofd:Content",
+  layer: ofdKeys.Layer || "ofd:Layer",
+  template: ofdKeys.Template || "ofd:Template",
+  templatePage: ofdKeys.TemplatePage || "ofd:TemplatePage",
+  textObject: ofdKeys.TextObject || "ofd:TextObject",
+  textCode: ofdKeys.TextCode || "ofd:TextCode",
+};
+
+// 从 XmlData 节点读取属性值（attrsMap 优先，回退到库的属性查询函数）
+const getNodeAttribute = (node: any, name: string): string => {
+  if (!node) return "";
+  const attrs = node.attrsMap;
+  if (attrs && typeof attrs.get === "function") {
+    const value = attrs.get(name);
+    if (value !== undefined && value !== null) {
+      return String(value);
+    }
+  }
+  const viaParser = ofdParser.findAttributeValueByKey?.(node, name);
+  return viaParser === undefined || viaParser === null ? "" : String(viaParser);
+};
+
+// "x y w h"（单位 mm）
+const parseStBox = (
+  value: string
+): { x: number; y: number; width: number; height: number } => {
+  const values = String(value || "")
+    .trim()
+    .split(/\s+/)
+    .map(Number);
+  const [x, y, width, height] = values;
+  if (
+    !isFinite(x) ||
+    !isFinite(y) ||
+    !isFinite(width) ||
+    !isFinite(height)
+  ) {
+    return { x: 0, y: 0, width: 0, height: 0 };
+  }
+  return { x, y, width, height };
+};
+
+// DeltaX/DeltaY 的 "g n v" 语法：g 后跟重复次数与重复值，其余为单值序列
+// （与库内文本渲染的解析保持一致，保证文本层坐标与绘制位置对齐）
+const parseDeltaList = (value: string): number[] => {
+  const list: number[] = [];
+  if (!value) return list;
+  const tokens = String(value)
+    .trim()
+    .split(/\s+/)
+    .filter((token) => token.length > 0);
+  let repeatCount = 0;
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (token === "g") {
+      repeatCount = parseInt(tokens[index + 1], 10) || 0;
+      index++;
+      continue;
+    }
+    const num = parseFloat(token);
+    if (!isFinite(num)) continue;
+    if (repeatCount > 0) {
+      for (let repeat = 0; repeat < repeatCount; repeat++) {
+        list.push(num);
+      }
+      repeatCount = 0;
+    } else {
+      list.push(num);
+    }
+  }
+  return list;
+};
+
 // liteofd 的页面内容在 setTimeout 中异步绘制且没有完成回调，
 // 用 16×16 缩绘指纹轮询：非空且连续两次一致视为绘制完成（超时兜底放行）
 const waitForPageStable = (
@@ -138,7 +214,8 @@ class OfdRender extends ComicRender {
       const liteOfd = new LiteOfd();
       await silenceConsole(() => liteOfd.parse(this.comicBuffer));
       if (typeof liteOfd.toggleRenderTextLayer === "function") {
-        // 关闭 DOM 文本选择层：其样式依赖 liteofd 未随包发布的 css
+        // 发布版的文本层为空实现；保持关闭，文本层由 addTextLayer 自建
+        // （若未来版本真正生效，这里关闭也避免与自建层叠加）
         liteOfd.toggleRenderTextLayer(false);
       }
       this.liteOfd = liteOfd;
@@ -332,6 +409,8 @@ class OfdRender extends ComicRender {
       // canvas 跨文档挂载后在分栏（single/double）布局下存在不绘制的问题，
       // 统一转成 <img> 展示（与 DjvuRender 一致，浏览器对图片的绘制最稳定）
       await this.swapCanvasToImage(chapterDocIndex, subDoc, pageEl);
+      // 页面是栅格图片，叠加自建的透明文本层提供选中/复制/笔记能力
+      await this.addTextLayer(subDoc, pageEl, chapterDocIndex, scale);
       // 页面在 iframe 内完成布局后按实际尺寸等比适配（通常宽高比与容器一致）
       const pageW = pageEl.offsetWidth || box.width * scale;
       const pageH = pageEl.offsetHeight || box.height * scale;
@@ -390,6 +469,227 @@ class OfdRender extends ComicRender {
       `height:${canvas.offsetHeight || canvas.height}px;`;
     parent.insertBefore(image, canvas);
     canvas.remove();
+  }
+
+  // 收集页面上的全部 TextObject：页面自身内容 + 引用模板的内容
+  // （发票/公文等页面的静态文字大多放在模板里）
+  private async collectPageTextObjects(pageIndex: number): Promise<any[]> {
+    const ofdDocument = this.ofdDocument;
+    if (!ofdDocument || !ofdDocument.pages) return [];
+    const pageData = ofdDocument.pages[pageIndex];
+    if (!pageData) return [];
+    const result: any[] = [];
+    const collectFromContentRoot = (root: any) => {
+      if (!root) return;
+      const content = ofdParser.findValueByTagName?.(root, OFD_TAGS.content);
+      if (!content || !content.children) return;
+      for (const layer of content.children) {
+        if (!layer || layer.tagName !== OFD_TAGS.layer) continue;
+        const objects =
+          ofdParser.findAllNodesByTagName?.(layer, OFD_TAGS.textObject) || [];
+        for (const object of objects) {
+          result.push(object);
+        }
+      }
+    };
+    const pageNode =
+      (pageData.children || []).find(
+        (child: any) => child.tagName === OFD_TAGS.page
+      ) || pageData;
+    collectFromContentRoot(pageNode);
+    try {
+      const template = ofdParser.findValueByTagName?.(
+        pageNode,
+        OFD_TAGS.template
+      );
+      const templateId =
+        getNodeAttribute(template, "TemplateID") ||
+        getNodeAttribute(pageNode, "TemplateID");
+      if (templateId) {
+        const templateNodes: any[] =
+          ofdParser.findAllNodesByTagName?.(
+            ofdDocument.documentData,
+            OFD_TAGS.templatePage
+          ) || [];
+        const matched = templateNodes.find(
+          (node: any) => getNodeAttribute(node, "ID") === templateId
+        );
+        const baseLoc = getNodeAttribute(matched, "BaseLoc");
+        if (baseLoc && typeof ofdParser.parseXmlByFileName === "function") {
+          const rootPath = ofdParser.RootDocPath || "Doc_0";
+          const path = baseLoc.startsWith(rootPath)
+            ? baseLoc
+            : `${rootPath}/${baseLoc.replace(/^\//, "")}`;
+          const templateFile = await ofdParser.parseXmlByFileName(
+            ofdDocument.files,
+            path
+          );
+          const templatePage = templateFile
+            ? ofdParser.findValueByTagName?.(templateFile, OFD_TAGS.page)
+            : null;
+          collectFromContentRoot(templatePage);
+        }
+      }
+    } catch (error) {
+      console.error(error);
+    }
+    return result;
+  }
+
+  // liteofd 发布版的文本层为空实现，这里按解析模型的 TextObject/TextCode 坐标
+  // 自建一层透明文本（与 DjvuRender 的文本层同思路）：文字不可见，但可选中/
+  // 复制，供划词、笔记与高亮使用；坐标换算与库内绘制一致（mm × scale）
+  private async addTextLayer(
+    subDoc: any,
+    pageEl: HTMLElement,
+    pageIndex: number,
+    scale: number
+  ) {
+    if (!subDoc || typeof subDoc.createElementNS !== "function") return;
+    const textObjects = await this.collectPageTextObjects(pageIndex);
+    if (textObjects.length === 0) return;
+    const SVG_NS = "http://www.w3.org/2000/svg";
+    // 先收集"行段"：同一 TextCode 内 Y 变化即换行；带 CTM 的段单独成组
+    interface TextRun {
+      y: number;
+      size: number;
+      ctm: number[] | null;
+      chars: { char: string; x: number; advance: number }[];
+    }
+    const runs: TextRun[] = [];
+    // 超大页面的文本层元素过多会拖慢渲染，超出上限时只保留前一部分
+    const MAX_TEXT_CHARS = 10000;
+    let charCount = 0;
+    for (const node of textObjects) {
+      if (charCount >= MAX_TEXT_CHARS) break;
+      const boundary = parseStBox(getNodeAttribute(node, "Boundary"));
+      const sizeMm = parseFloat(getNodeAttribute(node, "Size")) || 3.175;
+      let ctmValues: number[] | null = null;
+      const ctm = getNodeAttribute(node, "CTM");
+      if (ctm) {
+        const values = ctm
+          .trim()
+          .split(/\s+/)
+          .map(Number);
+        if (values.length >= 6 && values.every((value) => isFinite(value))) {
+          ctmValues = values;
+        }
+      }
+      const codes =
+        ofdParser.findAllNodesByTagName?.(node, OFD_TAGS.textCode) || [];
+      for (const code of codes) {
+        const text = String((code && code.value) || "");
+        if (!text) continue;
+        const startX = parseFloat(getNodeAttribute(code, "X")) || 0;
+        const startY = parseFloat(getNodeAttribute(code, "Y")) || 0;
+        const deltaX = parseDeltaList(getNodeAttribute(code, "DeltaX"));
+        const deltaY = parseDeltaList(getNodeAttribute(code, "DeltaY"));
+        let x = boundary.x + startX;
+        let y = boundary.y + startY;
+        let run: TextRun | null = null;
+        for (let index = 0; index < text.length; index++) {
+          if (charCount >= MAX_TEXT_CHARS) break;
+          charCount++;
+          if (index > 0) {
+            if (deltaX.length) x += deltaX[index - 1] || 0;
+            if (deltaY.length) y += deltaY[index - 1] || 0;
+          }
+          if (!run || Math.abs(run.y - y) > 0.2) {
+            run = { y, size: sizeMm, ctm: ctmValues, chars: [] };
+            runs.push(run);
+          }
+          run.chars.push({
+            char: text[index],
+            x,
+            advance:
+              deltaX.length > 0
+                ? deltaX[Math.min(index, deltaX.length - 1)]
+                : 0,
+          });
+        }
+      }
+    }
+    if (runs.length === 0) return;
+
+    // 同一基线（Y 接近）的行段合并为一行：一行一个 <text>、行内逐字 <tspan>，
+    // 跨元素复制时不会逐字产生换行（DjvuRender 同款处理）
+    const plainRuns = runs.filter((item) => !item.ctm);
+    const ctmRuns = runs.filter((item) => item.ctm);
+    plainRuns.sort(
+      (a, b) => a.y - b.y || (a.chars[0]?.x || 0) - (b.chars[0]?.x || 0)
+    );
+    const lines: TextRun[][] = [];
+    for (const run of plainRuns) {
+      const current = lines[lines.length - 1];
+      if (current && current.length > 0) {
+        const tolerance = Math.max(
+          0.35,
+          Math.min(current[0].size, run.size) * 0.5
+        );
+        if (Math.abs(current[0].y - run.y) <= tolerance) {
+          current.push(run);
+          continue;
+        }
+      }
+      lines.push([run]);
+    }
+
+    const createLine = (parent: any, lineRuns: TextRun[]) => {
+      const sorted = lineRuns
+        .slice()
+        .sort((a, b) => (a.chars[0]?.x || 0) - (b.chars[0]?.x || 0));
+      const textEl = subDoc.createElementNS(SVG_NS, "text");
+      textEl.setAttribute("fill", "transparent");
+      textEl.setAttribute("stroke", "none");
+      for (const run of sorted) {
+        for (const item of run.chars) {
+          const tspan = subDoc.createElementNS(SVG_NS, "tspan");
+          tspan.setAttribute("x", String(item.x * scale));
+          tspan.setAttribute("y", String(run.y * scale));
+          tspan.setAttribute(
+            "font-size",
+            String(Math.max(run.size * scale, 1))
+          );
+          // 单字宽度对齐原字距，选中高亮的范围才与页面上的文字重合
+          if (item.advance > 0) {
+            tspan.setAttribute("textLength", String(item.advance * scale));
+            tspan.setAttribute("lengthAdjust", "spacingAndGlyphs");
+          }
+          tspan.setAttribute("fill", "transparent");
+          tspan.setAttribute("stroke", "none");
+          tspan.setAttribute("style", "user-select:text;cursor:text;");
+          tspan.textContent = item.char;
+          textEl.appendChild(tspan);
+        }
+      }
+      parent.appendChild(textEl);
+    };
+
+    const layer = subDoc.createElementNS(SVG_NS, "svg");
+    layer.setAttribute("data-ofd-text-layer", "1");
+    layer.setAttribute(
+      "style",
+      "position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;"
+    );
+    const fragment = subDoc.createDocumentFragment();
+    for (const line of lines) {
+      createLine(fragment, line);
+    }
+    for (const run of ctmRuns) {
+      const group = subDoc.createElementNS(SVG_NS, "g");
+      const matrix = run.ctm || [];
+      group.setAttribute(
+        "transform",
+        `matrix(${matrix[0]} ${matrix[1]} ${matrix[2]} ${matrix[3]} ${
+          matrix[4] * scale
+        } ${matrix[5] * scale})`
+      );
+      createLine(group, [run]);
+      fragment.appendChild(group);
+    }
+    if (!fragment.childNodes.length) return;
+    layer.appendChild(fragment);
+    pageEl.appendChild(layer);
   }
 
   async handleUnloadComicChapter(chapterDocIndex: number) {
