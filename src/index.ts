@@ -6,6 +6,7 @@ import TxtRender from "./renders/TxtRender";
 import ComicRender from "./renders/ComicRender";
 import PptxRender from "./renders/PptxRender";
 import XpsRender from "./renders/XpsRender";
+import OfdRender from "./renders/OfdRender";
 import DjvuRender from "./renders/DjvuRender";
 import Fb2Render from "./renders/Fb2Render";
 import ChmRender from "./renders/ChmRender";
@@ -27,6 +28,7 @@ export {
   ComicRender,
   PptxRender,
   XpsRender,
+  OfdRender,
   DjvuRender,
   Fb2Render,
   ChmRender,

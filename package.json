@@ -58,6 +58,7 @@
     "fflate": "^0.8.2",
     "js-untar": "^2.0.0",
     "jszip": "^3.10.1",
+    "liteofd": "^0.5.3",
     "mammoth": "^1.8.0",
     "marked": "^15.0.3",
     "mhtml2html": "^3.0.0",

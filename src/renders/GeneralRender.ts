@@ -1636,6 +1636,7 @@ class GeneralRender extends EventEmitter {
       this.format !== "OXPS" &&
       this.format !== "DJVU" &&
       this.format !== "DJV" &&
+      this.format !== "OFD" &&
       !this.format?.startsWith("CB")
     ) {
       return [doc];
@@ -1660,6 +1661,7 @@ class GeneralRender extends EventEmitter {
       this.format !== "OXPS" &&
       this.format !== "DJVU" &&
       this.format !== "DJV" &&
+      this.format !== "OFD" &&
       !this.format?.startsWith("CB")
     ) {
       return [iframe];

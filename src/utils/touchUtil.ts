@@ -6,7 +6,7 @@ let isDragging = false;
 let lastPinchZoomTime = 0;
 let pinchZoomed = false;
 
-// PDF 与漫画（CB 系列）、PPTX、XPS、DjVu 共用"外层 iframe 承载滚动"的多 iframe 分页结构
+// PDF 与漫画（CB 系列）、PPTX、XPS、DjVu、OFD 共用"外层 iframe 承载滚动"的多 iframe 分页结构
 export const isPaginatedFormat = (format: string) => {
   return (
     format === "PDF" ||
@@ -15,6 +15,7 @@ export const isPaginatedFormat = (format: string) => {
     format === "OXPS" ||
     format === "DJVU" ||
     format === "DJV" ||
+    format === "OFD" ||
     (format && format.startsWith("CB"))
   );
 };

@@ -109,6 +109,9 @@ class BookHelper {
     } else if (format === "DJVU" || format === "DJV") {
       // DjVu 为固定版式文档（MRC 位图），逐页解码合成为 canvas，沿用漫画的多 iframe 分页结构
       rendition = new Kookit.DjvuRender(copyArrayBuffer(result), config);
+    } else if (format === "OFD") {
+      // OFD 为固定版式文档，逐页由 liteofd 渲染为 canvas，沿用漫画的多 iframe 分页结构
+      rendition = new Kookit.OfdRender(copyArrayBuffer(result), config);
     }
     return rendition;
   };
@@ -168,6 +171,7 @@ class BookHelper {
           case "oxps":
           case "djvu":
           case "djv":
+          case "ofd":
             metadata = await rendition.getMetadata();
             cover = metadata.cover;
             break;
