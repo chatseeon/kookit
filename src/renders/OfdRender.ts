@@ -3,7 +3,6 @@ import { createPDFIframe } from "../utils/pdfUtil.js";
 import {
   LiteOfd,
   OfdRender as OfdPageRenderer,
-  parser as ofdParser,
   OFD_KEY as ofdKeys,
   rendererConfig,
 } from "liteofd";
@@ -22,29 +21,52 @@ const clampScale = (scale: number): number => {
   return Math.min(scale, MAX_RENDER_SCALE);
 };
 
-// 解析模型里的 OFD 标签名（优先取库导出的常量，缺失时回退到规范字面量）
-const OFD_TAGS = {
-  page: ofdKeys.Page || "ofd:Page",
-  content: ofdKeys.Content || "ofd:Content",
-  layer: ofdKeys.Layer || "ofd:Layer",
-  template: ofdKeys.Template || "ofd:Template",
-  templatePage: ofdKeys.TemplatePage || "ofd:TemplatePage",
-  textObject: ofdKeys.TextObject || "ofd:TextObject",
-  textCode: ofdKeys.TextCode || "ofd:TextCode",
+// OFD XML 里的元素本地名（按 localName 匹配，不依赖前缀）
+const OFD_LOCAL = {
+  docRoot: "DocRoot",
+  page: "Page",
+  template: "Template",
+  templatePage: "TemplatePage",
+  textObject: "TextObject",
+  textCode: "TextCode",
 };
 
-// 从 XmlData 节点读取属性值（attrsMap 优先，回退到库的属性查询函数）
-const getNodeAttribute = (node: any, name: string): string => {
-  if (!node) return "";
-  const attrs = node.attrsMap;
-  if (attrs && typeof attrs.get === "function") {
-    const value = attrs.get(name);
-    if (value !== undefined && value !== null) {
-      return String(value);
-    }
+// 解析模型里的 PhysicalBox（仍走解析模型，尺寸读取已实测可靠）
+const OFD_PHYSICAL_BOX = ofdKeys.PhysicalBox || "ofd:PhysicalBox";
+
+interface OfdTextCodeData {
+  x: number;
+  y: number;
+  deltaX: number[];
+  deltaY: number[];
+  text: string;
+}
+
+interface OfdTextObjectData {
+  boundary: { x: number; y: number; width: number; height: number };
+  size: number;
+  ctm: number[] | null;
+  codes: OfdTextCodeData[];
+}
+
+// 逐层遍历 XmlData 树（仅用于读取 PhysicalBox；children 可能是数组或 Map）
+const walkNodes = (node: any, visit: (node: any) => void) => {
+  if (!node || typeof node !== "object") return;
+  visit(node);
+  const children = node.children;
+  if (children && typeof children.forEach === "function") {
+    children.forEach((child: any) => walkNodes(child, visit));
   }
-  const viaParser = ofdParser.findAttributeValueByKey?.(node, name);
-  return viaParser === undefined || viaParser === null ? "" : String(viaParser);
+};
+
+const findNodesByTag = (root: any, tag: string): any[] => {
+  const list: any[] = [];
+  walkNodes(root, (node: any) => {
+    if (node.tagName === tag) {
+      list.push(node);
+    }
+  });
+  return list;
 };
 
 // "x y w h"（单位 mm）
@@ -56,12 +78,7 @@ const parseStBox = (
     .split(/\s+/)
     .map(Number);
   const [x, y, width, height] = values;
-  if (
-    !isFinite(x) ||
-    !isFinite(y) ||
-    !isFinite(width) ||
-    !isFinite(height)
-  ) {
+  if (!isFinite(x) || !isFinite(y) || !isFinite(width) || !isFinite(height)) {
     return { x: 0, y: 0, width: 0, height: 0 };
   }
   return { x, y, width, height };
@@ -208,7 +225,10 @@ class OfdRender extends ComicRender {
         throw new Error("liteofd module is not available");
       }
       // 固定 canvas 渲染模式：每页一个 canvas，绘制完成后再挂载
-      if (rendererConfig && typeof rendererConfig.setRendererType === "function") {
+      if (
+        rendererConfig &&
+        typeof rendererConfig.setRendererType === "function"
+      ) {
         rendererConfig.setRendererType("canvas");
       }
       const liteOfd = new LiteOfd();
@@ -262,14 +282,12 @@ class OfdRender extends ComicRender {
     const ofdDocument = this.ofdDocument;
     if (!ofdDocument) return null;
     const pageData = ofdDocument.pages && ofdDocument.pages[pageIndex];
+    // 同样不用库的查找函数，避免取到其他页面的 PhysicalBox
     let boxNode = pageData
-      ? ofdParser.findValueByTagName?.(pageData, ofdKeys.PhysicalBox)
+      ? findNodesByTag(pageData, OFD_PHYSICAL_BOX)[0]
       : null;
     if (!boxNode && ofdDocument.documentData) {
-      boxNode = ofdParser.findValueByTagName?.(
-        ofdDocument.documentData,
-        ofdKeys.PhysicalBox
-      );
+      boxNode = findNodesByTag(ofdDocument.documentData, OFD_PHYSICAL_BOX)[0];
     }
     const values = String((boxNode && boxNode.value) || "")
       .trim()
@@ -329,7 +347,9 @@ class OfdRender extends ComicRender {
           0,
           clampScale(COVER_WIDTH / box.width)
         );
-        const canvas = pageEl.querySelector("canvas") as HTMLCanvasElement | null;
+        const canvas = pageEl.querySelector(
+          "canvas"
+        ) as HTMLCanvasElement | null;
         if (!canvas || !canvas.width || !canvas.height) {
           return null;
         }
@@ -471,73 +491,136 @@ class OfdRender extends ComicRender {
     canvas.remove();
   }
 
-  // 收集页面上的全部 TextObject：页面自身内容 + 引用模板的内容
-  // （发票/公文等页面的静态文字大多放在模板里）
-  private async collectPageTextObjects(pageIndex: number): Promise<any[]> {
-    const ofdDocument = this.ofdDocument;
-    if (!ofdDocument || !ofdDocument.pages) return [];
-    const pageData = ofdDocument.pages[pageIndex];
-    if (!pageData) return [];
-    const result: any[] = [];
-    const collectFromContentRoot = (root: any) => {
-      if (!root) return;
-      const content = ofdParser.findValueByTagName?.(root, OFD_TAGS.content);
-      if (!content || !content.children) return;
-      for (const layer of content.children) {
-        if (!layer || layer.tagName !== OFD_TAGS.layer) continue;
-        const objects =
-          ofdParser.findAllNodesByTagName?.(layer, OFD_TAGS.textObject) || [];
-        for (const object of objects) {
-          result.push(object);
-        }
-      }
-    };
-    const pageNode =
-      (pageData.children || []).find(
-        (child: any) => child.tagName === OFD_TAGS.page
-      ) || pageData;
-    collectFromContentRoot(pageNode);
+  // 读取 OFD 包内的文件（files 为「路径 → zip 条目」映射，条目提供 async() 读取）
+  private findEntry(path: string): any {
+    const files: any = this.ofdDocument && this.ofdDocument.files;
+    if (!files) return null;
+    const normalized = path.replace(/^\.?\//, "");
+    if (files[normalized]) return files[normalized];
+    const keys = Object.keys(files);
+    const hit = keys.find(
+      (key) =>
+        key.replace(/^\.?\//, "") === normalized ||
+        key.endsWith("/" + normalized)
+    );
+    return hit ? files[hit] : null;
+  }
+
+  private async parseEntryXml(path: string): Promise<Document | null> {
+    const entry = this.findEntry(path);
+    if (!entry || typeof entry.async !== "function") return null;
     try {
-      const template = ofdParser.findValueByTagName?.(
-        pageNode,
-        OFD_TAGS.template
-      );
-      const templateId =
-        getNodeAttribute(template, "TemplateID") ||
-        getNodeAttribute(pageNode, "TemplateID");
-      if (templateId) {
-        const templateNodes: any[] =
-          ofdParser.findAllNodesByTagName?.(
-            ofdDocument.documentData,
-            OFD_TAGS.templatePage
-          ) || [];
-        const matched = templateNodes.find(
-          (node: any) => getNodeAttribute(node, "ID") === templateId
-        );
-        const baseLoc = getNodeAttribute(matched, "BaseLoc");
-        if (baseLoc && typeof ofdParser.parseXmlByFileName === "function") {
-          const rootPath = ofdParser.RootDocPath || "Doc_0";
-          const path = baseLoc.startsWith(rootPath)
-            ? baseLoc
-            : `${rootPath}/${baseLoc.replace(/^\//, "")}`;
-          const templateFile = await ofdParser.parseXmlByFileName(
-            ofdDocument.files,
-            path
-          );
-          const templatePage = templateFile
-            ? ofdParser.findValueByTagName?.(templateFile, OFD_TAGS.page)
-            : null;
-          collectFromContentRoot(templatePage);
-        }
-      }
+      const text = await entry.async("string");
+      return new DOMParser().parseFromString(text, "text/xml");
     } catch (error) {
       console.error(error);
+      return null;
+    }
+  }
+
+  private pushTextObjectsFromXml(xml: Document, out: OfdTextObjectData[]) {
+    const objects = Array.from(
+      xml.getElementsByTagNameNS("*", OFD_LOCAL.textObject)
+    ) as Element[];
+    for (const object of objects) {
+      const codes: OfdTextCodeData[] = [];
+      const codeElements = Array.from(
+        object.getElementsByTagNameNS("*", OFD_LOCAL.textCode)
+      ) as Element[];
+      for (const code of codeElements) {
+        const text = code.textContent || "";
+        if (!text) continue;
+        codes.push({
+          x: parseFloat(code.getAttribute("X") || "") || 0,
+          y: parseFloat(code.getAttribute("Y") || "") || 0,
+          deltaX: parseDeltaList(code.getAttribute("DeltaX") || ""),
+          deltaY: parseDeltaList(code.getAttribute("DeltaY") || ""),
+          text,
+        });
+      }
+      if (codes.length === 0) continue;
+      const ctmRaw = object.getAttribute("CTM") || "";
+      let ctm: number[] | null = null;
+      if (ctmRaw) {
+        const values = ctmRaw.trim().split(/\s+/).map(Number);
+        if (values.length >= 6 && values.every((value) => isFinite(value))) {
+          ctm = values;
+        }
+      }
+      out.push({
+        boundary: parseStBox(object.getAttribute("Boundary") || ""),
+        size: parseFloat(object.getAttribute("Size") || "") || 3.175,
+        ctm,
+        codes,
+      });
+    }
+  }
+
+  // 收集页面上的全部文本对象：页面自身内容 + 引用模板的内容
+  // （发票/公文等页面的静态文字大多放在模板里）。
+  // 注意：不用 liteofd 解析出的 XmlData 模型——实测其树结构不可靠（TextObject
+  // 嵌套重复、页面树里没有 Template 节点），会导致文本层内容重复与缺失；
+  // 这里直接读压缩包内的原始 XML，用 DOMParser 解析（规范结构，稳定可靠）
+  private async collectPageTextObjects(
+    pageIndex: number
+  ): Promise<OfdTextObjectData[]> {
+    const result: OfdTextObjectData[] = [];
+    if (!this.ofdDocument || !this.ofdDocument.files) return result;
+    const ofdXml = await this.parseEntryXml("OFD.xml");
+    const docRoot = (
+      ofdXml
+        ? ofdXml.getElementsByTagNameNS("*", OFD_LOCAL.docRoot)[0]?.textContent
+        : ""
+    )
+      ?.trim()
+      .replace(/^\//, "");
+    const documentPath = docRoot || "Doc_0/Document.xml";
+    const rootDir = documentPath.replace(/[^/]*$/, "").replace(/\/$/, "");
+    const documentXml = await this.parseEntryXml(documentPath);
+    if (!documentXml) return result;
+    const pageNodes = Array.from(
+      documentXml.getElementsByTagNameNS("*", OFD_LOCAL.page)
+    ) as Element[];
+    const pageNode = pageNodes[pageIndex];
+    const pageBaseLoc = pageNode ? pageNode.getAttribute("BaseLoc") || "" : "";
+    if (!pageBaseLoc) return result;
+    const joinPath = (base: string, relative: string) => {
+      const clean = relative.replace(/^\//, "");
+      return base && !clean.startsWith(base) ? `${base}/${clean}` : clean;
+    };
+    const pageXml = await this.parseEntryXml(joinPath(rootDir, pageBaseLoc));
+    if (pageXml) this.pushTextObjectsFromXml(pageXml, result);
+    // 模板层
+    const templateRef = pageXml
+      ? (pageXml.getElementsByTagNameNS("*", OFD_LOCAL.template)[0] as
+          | Element
+          | undefined)
+      : undefined;
+    const templateId = templateRef
+      ? templateRef.getAttribute("TemplateID") || ""
+      : "";
+    if (templateId) {
+      const templateNodes = Array.from(
+        documentXml.getElementsByTagNameNS("*", OFD_LOCAL.templatePage)
+      ) as Element[];
+      const matched = templateNodes.find(
+        (node) => node.getAttribute("ID") === templateId
+      );
+      const templateBaseLoc = matched
+        ? matched.getAttribute("BaseLoc") || ""
+        : "";
+      if (templateBaseLoc) {
+        const templateXml = await this.parseEntryXml(
+          joinPath(rootDir, templateBaseLoc)
+        );
+        if (templateXml) this.pushTextObjectsFromXml(templateXml, result);
+      }
     }
     return result;
   }
 
-  // liteofd 发布版的文本层为空实现，这里按解析模型的 TextObject/TextCode 坐标
-  // 自建一层透明文本（与 DjvuRender 的文本层同思路）：文字不可见，但可选中/
+  // liteofd 发布版的文本层为空实现，这里按 OFD 原始 XML 的 TextObject/TextCode
+  // 坐标自建一层透明文本（与 DjvuRender 的文本层同思路）：文字不可见，但可选中/
   // 复制，供划词、笔记与高亮使用；坐标换算与库内绘制一致（mm × scale）
   private async addTextLayer(
     subDoc: any,
@@ -560,32 +643,17 @@ class OfdRender extends ComicRender {
     // 超大页面的文本层元素过多会拖慢渲染，超出上限时只保留前一部分
     const MAX_TEXT_CHARS = 10000;
     let charCount = 0;
-    for (const node of textObjects) {
+    for (const object of textObjects) {
       if (charCount >= MAX_TEXT_CHARS) break;
-      const boundary = parseStBox(getNodeAttribute(node, "Boundary"));
-      const sizeMm = parseFloat(getNodeAttribute(node, "Size")) || 3.175;
-      let ctmValues: number[] | null = null;
-      const ctm = getNodeAttribute(node, "CTM");
-      if (ctm) {
-        const values = ctm
-          .trim()
-          .split(/\s+/)
-          .map(Number);
-        if (values.length >= 6 && values.every((value) => isFinite(value))) {
-          ctmValues = values;
-        }
-      }
-      const codes =
-        ofdParser.findAllNodesByTagName?.(node, OFD_TAGS.textCode) || [];
-      for (const code of codes) {
-        const text = String((code && code.value) || "");
+      const boundary = object.boundary;
+      const sizeMm = object.size;
+      for (const code of object.codes) {
+        const text = code.text;
         if (!text) continue;
-        const startX = parseFloat(getNodeAttribute(code, "X")) || 0;
-        const startY = parseFloat(getNodeAttribute(code, "Y")) || 0;
-        const deltaX = parseDeltaList(getNodeAttribute(code, "DeltaX"));
-        const deltaY = parseDeltaList(getNodeAttribute(code, "DeltaY"));
-        let x = boundary.x + startX;
-        let y = boundary.y + startY;
+        const deltaX = code.deltaX;
+        const deltaY = code.deltaY;
+        let x = boundary.x + code.x;
+        let y = boundary.y + code.y;
         let run: TextRun | null = null;
         for (let index = 0; index < text.length; index++) {
           if (charCount >= MAX_TEXT_CHARS) break;
@@ -595,7 +663,7 @@ class OfdRender extends ComicRender {
             if (deltaY.length) y += deltaY[index - 1] || 0;
           }
           if (!run || Math.abs(run.y - y) > 0.2) {
-            run = { y, size: sizeMm, ctm: ctmValues, chars: [] };
+            run = { y, size: sizeMm, ctm: object.ctm, chars: [] };
             runs.push(run);
           }
           run.chars.push({
@@ -820,8 +888,8 @@ class OfdRender extends ComicRender {
     const pages = this.ofdDocument?.pages;
     if (!pages || chapterDocIndex >= pages.length) return [];
     try {
-      const text = await silenceConsole(
-        () => this.ofdDocument.getContentText(chapterDocIndex + 1)
+      const text = await silenceConsole(() =>
+        this.ofdDocument.getContentText(chapterDocIndex + 1)
       );
       return text ? [text] : [];
     } catch (error) {
