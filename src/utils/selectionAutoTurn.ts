@@ -2,24 +2,33 @@
 // The selection handle must rest in a screen corner for AUTO_TURN_DWELL_MS before
 // the page turns, so merely passing the corner mid-drag does not flip the page.
 
+import { isRevertDirection } from "./layoutUtil";
+
 const AUTO_TURN_DWELL_MS = 500;
 // Fixed pixel radius around each corner for auto-turn detection.
 // Kept tight so normal selections ending in the lower-right of the page do not auto-turn.
 const AUTO_TURN_CORNER_RADIUS = 50;
 
-type Corner = "br" | "tl";
+type Corner = "br" | "bl" | "tl" | "tr";
 
 const cornerOf = (
   x: number,
   y: number,
   w: number,
-  h: number
+  h: number,
+  revertDirection: boolean = false
 ): Corner | null => {
   if (w <= 0 || h <= 0) return null;
   const rx = AUTO_TURN_CORNER_RADIUS;
   const ry = AUTO_TURN_CORNER_RADIUS;
   const inEllipse = (dx: number, dy: number) =>
     (dx / rx) ** 2 + (dy / ry) ** 2 <= 1;
+  if (revertDirection) {
+    // RTL 下继续向后选文是把句柄拖到左下角，向前则是右上角
+    if (inEllipse(x, h - y)) return "bl";
+    if (inEllipse(w - x, y)) return "tr";
+    return null;
+  }
   if (inEllipse(w - x, h - y)) return "br";
   if (inEllipse(x, y)) return "tl";
   return null;
@@ -31,11 +40,12 @@ const cornerAt = (
   x: number,
   y: number,
   w: number,
-  h: number
+  h: number,
+  revertDirection: boolean = false
 ): Corner | null => {
   if (w <= 0 || h <= 0) return null;
   if (x < 0 || x > w || y < 0 || y > h) return null;
-  return cornerOf(x, y, w, h);
+  return cornerOf(x, y, w, h, revertDirection);
 };
 
 const focusCaretPos = (
@@ -110,6 +120,8 @@ export const createSelectionAutoTurn = (
     return null;
   }
 
+  const revertDirection = isRevertDirection();
+
   let autoTurnTimer: ReturnType<typeof setTimeout> | null = null;
   let engagedCorner: Corner | null = null;
   let isAutoTurning = false;
@@ -147,7 +159,7 @@ export const createSelectionAutoTurn = (
     const p = pointerPos;
     if (!p) return null;
     const { w, h } = viewportSize();
-    return cornerAt(p.x, p.y, w, h);
+    return cornerAt(p.x, p.y, w, h, revertDirection);
   };
 
   const caretCornerNow = (): Corner | null => {
@@ -156,7 +168,7 @@ export const createSelectionAutoTurn = (
     const pos = focusCaretPos(doc, sel);
     if (!pos) return null;
     const { w, h } = viewportSize();
-    return cornerAt(pos.x, pos.y, w, h);
+    return cornerAt(pos.x, pos.y, w, h, revertDirection);
   };
 
   const activeCornerNow = (): Corner | null => {
@@ -265,7 +277,8 @@ export const createSelectionAutoTurn = (
       }
 
       isAutoTurning = true;
-      const turning = corner === "br" ? render.next() : render.prev();
+      const nextCorner = revertDirection ? "bl" : "br";
+      const turning = corner === nextCorner ? render.next() : render.prev();
       Promise.resolve(turning).finally(() => {
         pinnedScrollLeft = doc.body.scrollLeft;
         pinnedScrollTop = doc.body.scrollTop;

@@ -1,3 +1,5 @@
+import { isRevertDirection } from "./layoutUtil";
+
 // 阅读尺管理器：在高亮窗口以外的区域显示遮罩，按 N 行一个窗口逐步推进
 class ReadingRulerManager {
   // 配置
@@ -71,6 +73,13 @@ class ReadingRulerManager {
     let section = Math.floor(width / 12);
     let gap = section % 2 === 0 ? section : section - 1;
     const sectionWidth = Math.max(0, (width - gap) / 2);
+    if (isRevertDirection()) {
+      // RTL 双页第一栏在右半屏
+      if (this.column === 0) {
+        return { left: Math.min(width, sectionWidth + gap), right: width };
+      }
+      return { left: 0, right: sectionWidth };
+    }
     if (this.column === 0) {
       return { left: 0, right: sectionWidth };
     }

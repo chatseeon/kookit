@@ -4,6 +4,9 @@ import {
   convertStyleNum,
   getActualOffsetLeft,
   getActualOffsetTop,
+  getLogicalHorizontalScroll,
+  getScrollLeftForContentOffset,
+  getScrollLeftForLogical,
   handleIframeHeight,
   handleOneChapterDoc,
   isVerticalLayout,
@@ -142,13 +145,16 @@ export const handleScrollPage = async (
     let section = Math.floor(element.clientWidth / 12);
     let gap = section % 2 === 0 ? section : section - 1;
     const width = element.clientWidth;
-    const currentScrollLeft = doc.body.scrollLeft;
+    const currentScrollLeft = getLogicalHorizontalScroll(doc.body);
     const scrollDistance = width + gap;
 
     if (delta > 0) {
       const currentPage = Math.round(currentScrollLeft / scrollDistance);
       const targetPage = Math.max(0, currentPage - 1);
-      const targetScrollLeft = targetPage * scrollDistance;
+      const targetScrollLeft = getScrollLeftForLogical(
+        doc.body,
+        targetPage * scrollDistance
+      );
       doc.body.scrollTo({
         top: 0,
         left: targetScrollLeft,
@@ -158,7 +164,10 @@ export const handleScrollPage = async (
     } else if (delta < 0) {
       const currentPage = Math.round(currentScrollLeft / scrollDistance);
       const targetPage = currentPage + 1;
-      const targetScrollLeft = targetPage * scrollDistance;
+      const targetScrollLeft = getScrollLeftForLogical(
+        doc.body,
+        targetPage * scrollDistance
+      );
       doc.body.scrollTo({
         top: 0,
         left: targetScrollLeft,
@@ -552,7 +561,10 @@ export const handleScrollPosition = async (
       let gap = section % 2 === 0 ? section : section - 1;
       const width = convertComputedNum(getComputedStyle(element).width);
       let pageWidth = width + gap;
-      left = pageWidth * (parseInt(page) - 1);
+      left = getScrollLeftForLogical(
+        doc.body,
+        pageWidth * (parseInt(page) - 1)
+      );
     }
   } else if (text) {
     let nodeList = getBlockElement(doc.body);
@@ -592,10 +604,13 @@ export const handleScrollPosition = async (
           : 0;
     } else {
       left = targetNode
-        ? getActualOffsetLeft(targetNode) -
-          convertStyleNum(
-            targetNode.marginLeft ||
-              parseFloat(getComputedStyle(targetNode).marginLeft)
+        ? getScrollLeftForContentOffset(
+            doc.body,
+            getActualOffsetLeft(targetNode) -
+              convertStyleNum(
+                targetNode.marginLeft ||
+                  parseFloat(getComputedStyle(targetNode).marginLeft)
+              )
           )
         : text === "prevChapter"
           ? doc.body.scrollWidth
@@ -621,10 +636,13 @@ export const handleScrollPosition = async (
         : 0;
     } else {
       left = targetNode
-        ? getActualOffsetLeft(targetNode) -
-          convertStyleNum(
-            targetNode.marginLeft ||
-              parseFloat(getComputedStyle(targetNode).marginLeft)
+        ? getScrollLeftForContentOffset(
+            doc.body,
+            getActualOffsetLeft(targetNode) -
+              convertStyleNum(
+                targetNode.marginLeft ||
+                  parseFloat(getComputedStyle(targetNode).marginLeft)
+              )
           )
         : 0;
     }

@@ -1,4 +1,6 @@
-function createBookElement(sectionCount) {
+import { isRevertDirection } from "./layoutUtil";
+
+function createBookElement(sectionCount, revertDirection: boolean) {
   let tempDiv = document.getElementById("book");
   if (tempDiv) {
     tempDiv.remove();
@@ -38,6 +40,7 @@ function createBookElement(sectionCount) {
         float: left;
         margin: 0;
         display: none;
+        ${revertDirection ? "transform: scaleX(-1);" : ""}
       }
 
       #pages section {
@@ -83,7 +86,8 @@ export const addPageAnimation = (
   }
   flipAnimating = false;
 
-  createBookElement(Math.max(1, Math.floor(totalPage) + 1));
+  const revertDirection = isRevertDirection();
+  createBookElement(Math.max(1, Math.floor(totalPage) + 1), revertDirection);
   var WINDOW_WIDTH = window.innerWidth;
   var WINDOW_HEIGHT = window.innerHeight;
 
@@ -170,7 +174,9 @@ export const addPageAnimation = (
     if (!book || !event.touches?.[0]) return;
     const touch = event.touches[0];
     const bookRect = book.getBoundingClientRect();
-    mouse.x = touch.screenX - bookRect.left - BOOK_WIDTH / 2;
+    mouse.x =
+      (touch.screenX - bookRect.left - BOOK_WIDTH / 2) *
+      (revertDirection ? -1 : 1);
     mouse.y = touch.screenY - bookRect.top;
   }
 
@@ -178,12 +184,13 @@ export const addPageAnimation = (
     const touch = event.touches?.[0];
     if (!touch) return;
     touchStartX = touch.screenX;
-    if (touch.screenX < window.screen.width / 2 && pageNum - 1 >= 0) {
+    // RTL 下左侧拖动的是“下一页”，右侧拖动的是“上一页”
+    const dragPreviousPage = revertDirection
+      ? touch.screenX > window.screen.width / 2
+      : touch.screenX < window.screen.width / 2;
+    if (dragPreviousPage && pageNum - 1 >= 0) {
       flips[pageNum - 1].dragging = true;
-    } else if (
-      touch.screenX > window.screen.width / 2 &&
-      pageNum + 1 < flips.length
-    ) {
+    } else if (!dragPreviousPage && pageNum + 1 < flips.length) {
       flips[pageNum].dragging = true;
     }
 
@@ -195,17 +202,20 @@ export const addPageAnimation = (
     const touch = event.changedTouches?.[0];
     if (!touch) return;
     touchEndX = touch.screenX;
+    const dragToNext = revertDirection
+      ? mouse.x > -(PAGE_WIDTH / 4) * 3 && touchEndX - touchStartX > 0
+      : mouse.x < (PAGE_WIDTH / 4) * 3 && touchEndX - touchStartX < 0;
+    const dragToPrev = revertDirection
+      ? mouse.x < -(PAGE_WIDTH / 4) * 1 && touchEndX - touchStartX < 0
+      : mouse.x > (PAGE_WIDTH / 4) * 1 && touchEndX - touchStartX > 0;
     for (var i = 0; i < flips.length; i++) {
       // If this flip was being dragged we animate to its destination
       if (flips[i].dragging) {
         // Figure out which page we should go to next depending on the flip direction
-        if (mouse.x < (PAGE_WIDTH / 4) * 3 && touchEndX - touchStartX < 0) {
+        if (dragToNext) {
           flips[i].target = -1;
           pageNum = Math.min(pageNum + 1, flips.length);
-        } else if (
-          mouse.x > (PAGE_WIDTH / 4) * 1 &&
-          touchEndX - touchStartX > 0
-        ) {
+        } else if (dragToPrev) {
           flips[i].target = 1;
           pageNum = Math.max(pageNum - 1, 0);
         } else {

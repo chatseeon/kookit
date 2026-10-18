@@ -46,6 +46,7 @@ class BookHelper {
       backgroundColor: string;
       isScannedPDF: string;
       ocrEngine: string;
+      revertDirection?: string;
       externalWorker?: any;
     },
     Kookit: any

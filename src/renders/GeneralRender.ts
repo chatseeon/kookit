@@ -5,6 +5,10 @@ import {
   convertStyleNum,
   getActualOffsetLeft,
   getActualOffsetTop,
+  getLogicalHorizontalScroll,
+  getMaxHorizontalScroll,
+  getScrollLeftForContentOffset,
+  getScrollLeftForLogical,
   getSelectedElement,
   handleOneChapterDoc,
   isVerticalLayout,
@@ -101,6 +105,7 @@ class GeneralRender extends EventEmitter {
     null;
   estimatedSizePerPage: number | null = null;
   speedReadingSpeed: number = 300;
+  revertDirection: string = "no";
   platform: string = "web";
   isAllowScript: string = "no";
   touchEventSet: any;
@@ -136,6 +141,7 @@ class GeneralRender extends EventEmitter {
     isSpeedReading?: string;
     speedReadingSpeed?: number;
     textOrientation?: string;
+    revertDirection?: string;
     isShowTotalPage?: string;
     isAllowScript?: string;
     fullTranslationMode?: string;
@@ -169,6 +175,8 @@ class GeneralRender extends EventEmitter {
     this.backgroundColor = config.backgroundColor || "";
     this.textOrientation = config.textOrientation;
     window.textOrientation = config.textOrientation;
+    this.revertDirection = config.revertDirection || "no";
+    window.revertDirection = this.revertDirection;
     this.isShowTotalPage = config.isShowTotalPage || "no";
     this.chapterList = [];
     this.chapterDocList = [];
@@ -333,10 +341,13 @@ class GeneralRender extends EventEmitter {
     if (audioNodes.length > 0) {
       let targetNode: any = audioNodes[0];
       let left = targetNode
-        ? getActualOffsetLeft(targetNode) -
-          convertStyleNum(
-            targetNode.marginLeft ||
-              parseFloat(getComputedStyle(targetNode).marginLeft)
+        ? getScrollLeftForContentOffset(
+            doc.body,
+            getActualOffsetLeft(targetNode) -
+              convertStyleNum(
+                targetNode.marginLeft ||
+                  parseFloat(getComputedStyle(targetNode).marginLeft)
+              )
           )
         : 0;
       let top = targetNode
@@ -418,7 +429,10 @@ class GeneralRender extends EventEmitter {
         if (targetPage < 0) {
           targetPage = 0;
         }
-        const targetScrollLeft = targetPage * scrollDistance;
+        const targetScrollLeft = getScrollLeftForLogical(
+          doc.body,
+          targetPage * scrollDistance
+        );
         doc.body.scrollTo({
           top: 0,
           left: targetScrollLeft,
@@ -707,10 +721,13 @@ class GeneralRender extends EventEmitter {
     }
     let targetNode = getCloestBlock(node, this.element, this.readerMode);
     let left = targetNode
-      ? getActualOffsetLeft(targetNode) -
-        convertStyleNum(
-          targetNode.marginLeft ||
-            parseFloat(getComputedStyle(targetNode).marginLeft)
+      ? getScrollLeftForContentOffset(
+          doc.body,
+          getActualOffsetLeft(targetNode) -
+            convertStyleNum(
+              targetNode.marginLeft ||
+                parseFloat(getComputedStyle(targetNode).marginLeft)
+            )
         )
       : 0;
     let top = targetNode
@@ -799,8 +816,10 @@ class GeneralRender extends EventEmitter {
         let section = Math.floor(this.element.clientWidth / 12);
         let gap = section % 2 === 0 ? section : section - 1;
         let scrollDistance = this.element.clientWidth + gap;
+        let targetLeft =
+          Math.max(0, Math.round(left / scrollDistance)) * scrollDistance;
         doc.body.scrollTo(
-          Math.max(0, Math.round(left / scrollDistance)) * scrollDistance,
+          getScrollLeftForContentOffset(doc.body, targetLeft),
           0
         );
       }
@@ -855,7 +874,10 @@ class GeneralRender extends EventEmitter {
         } else if (this.isVertical()) {
           doc.body.scrollTo(0, doc.body.scrollHeight);
         } else {
-          doc.body.scrollTo(doc.body.scrollWidth, 0);
+          doc.body.scrollTo(
+            getScrollLeftForLogical(doc.body, getMaxHorizontalScroll(doc.body)),
+            0
+          );
         }
       }
       this.trigger("rendered");
@@ -905,9 +927,8 @@ class GeneralRender extends EventEmitter {
             doc.body.clientHeight
         ) < 50) ||
       (Math.abs(
-        doc.body.scrollWidth -
-          convertStyleNum(doc.body.scrollLeft) -
-          doc.body.clientWidth
+        getMaxHorizontalScroll(doc.body) -
+          getLogicalHorizontalScroll(doc.body)
       ) < 50 &&
         this.readerMode !== "scroll" &&
         !this.isVertical()) ||

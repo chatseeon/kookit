@@ -7,6 +7,50 @@ declare var window: any;
 export const isVerticalLayout = (): boolean => {
   return window.textOrientation === "vertical";
 };
+// 从右往左阅读：仅在水平排版的单页/双页模式启用
+export const isRevertDirection = (): boolean => {
+  return window.revertDirection === "yes" && !isVerticalLayout();
+};
+export const getMaxHorizontalScroll = (scroller: HTMLElement): number => {
+  return Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+};
+// RTL 滚动容器的 scrollLeft 为负值，这里统一换算成从第一页开始的逻辑偏移
+export const getLogicalHorizontalScroll = (
+  scroller: HTMLElement
+): number => {
+  const scrollLeft = convertStyleNum(scroller.scrollLeft as any);
+  return isRevertDirection() ? -scrollLeft : scrollLeft;
+};
+export const getScrollLeftForLogical = (
+  scroller: HTMLElement,
+  logicalOffset: number
+): number => {
+  const maxScroll = getMaxHorizontalScroll(scroller);
+  const target = Math.max(0, Math.min(logicalOffset, maxScroll));
+  return isRevertDirection() ? -target : target;
+};
+// 把 getActualOffsetLeft 得到的内容偏移换算为可直接传给 scrollTo 的 scrollLeft。
+// LTR 下两者相同；RTL 下内容偏移恒为非负，而目标 scrollLeft 为“内容偏移 - 最大滚动量”。
+// 保留本函数是为了让调用方继续沿用 getActualOffsetLeft，不改变 LTR 行为。
+export const getScrollLeftForContentOffset = (
+  scroller: HTMLElement,
+  contentOffset: number
+): number => {
+  const maxScroll = getMaxHorizontalScroll(scroller);
+  const logical = Math.max(0, Math.min(contentOffset, maxScroll));
+  return isRevertDirection() ? logical - maxScroll : logical;
+};
+export const applyRevertDirectionStyle = (doc: Document) => {
+  if (!isRevertDirection()) return;
+  doc.documentElement.setAttribute("data-kookit-revert-direction", "yes");
+  if (doc.getElementById("kookit-revert-direction-style")) return;
+  const style = doc.createElement("style");
+  style.id = "kookit-revert-direction-style";
+  style.textContent =
+    'html[data-kookit-revert-direction="yes"] body{direction:rtl !important;}' +
+    'html[data-kookit-revert-direction="yes"] body>*:not([dir]){direction:ltr;}';
+  (doc.head || doc.documentElement).appendChild(style);
+};
 export const convertStyleNum = (value: number) => {
   if (!value) return 0;
   return parseFloat(value + "");
@@ -319,16 +363,16 @@ export const progressInfo = (
                 doc.body.scrollWidth / (doc.body.clientWidth + gap) + ""
               )
             ) * 2,
-    currentPage:
-      readerMode === "scroll"
-        ? Math.floor(element.scrollTop / (element.clientHeight - 50)) + 1
-        : Math.round(
-            parseFloat(
-              convertStyleNum(doc.body.scrollLeft) /
-                (doc.body.clientWidth + gap) +
-                ""
-            )
-          ) + 1,
+      currentPage:
+        readerMode === "scroll"
+          ? Math.floor(element.scrollTop / (element.clientHeight - 50)) + 1
+          : Math.round(
+              parseFloat(
+                getLogicalHorizontalScroll(doc.body) /
+                  (doc.body.clientWidth + gap) +
+                  ""
+              )
+            ) + 1,
   };
 };
 const fetchHighlightAsset = async (path: string) => {
@@ -794,6 +838,7 @@ export const handleLayout = (
       `margin: 0px !important; padding: 0px !important; overflow: unset !important;`
     );
   }
+  applyRevertDirectionStyle(doc);
 };
 
 export const isElement = (obj) => {
