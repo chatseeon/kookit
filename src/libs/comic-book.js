@@ -43,7 +43,7 @@ export const makeComicBook = ({ entries, loadBlob, getSize }, file) => {
   ];
   const files = entries
     .map((entry) => entry.filename)
-    .filter((name) => exts.some((ext) => name.endsWith(ext)))
+    .filter((name) => exts.some((ext) => name.toLowerCase().endsWith(ext)))
     .sort((a, b) =>
       a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
     );
