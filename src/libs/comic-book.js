@@ -40,6 +40,8 @@ export const makeComicBook = ({ entries, loadBlob, getSize }, file) => {
     ".jfif",
     ".jpe",
     ".heic",
+    ".avif",
+    ".heif",
   ];
   const files = entries
     .map((entry) => entry.filename)

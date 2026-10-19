@@ -193,7 +193,11 @@ const attrFloat = (el: Element, name: string): number | null => {
   return isNaN(num) ? null : num;
 };
 
-const attrBool = (el: Element, name: string, defaultValue: boolean): boolean => {
+const attrBool = (
+  el: Element,
+  name: string,
+  defaultValue: boolean
+): boolean => {
   const value = el.getAttribute(name);
   if (value === "true") return true;
   if (value === "false") return false;
@@ -336,6 +340,9 @@ const MIME_TYPES: Record<string, string> = {
   gif: "image/gif",
   bmp: "image/bmp",
   webp: "image/webp",
+  avif: "image/avif",
+  heic: "image/heic",
+  heif: "image/heif",
   svg: "image/svg+xml",
   tif: "image/tiff",
   tiff: "image/tiff",
@@ -378,7 +385,10 @@ const parseColor = (value: string): XpsColor | null => {
     return null;
   }
   if (str.indexOf("sc#") === 0) {
-    const parts = str.slice(3).split(",").map((part) => parseFloat(part));
+    const parts = str
+      .slice(3)
+      .split(",")
+      .map((part) => parseFloat(part));
     if (parts.some((num) => isNaN(num))) return null;
     if (parts.length === 4) {
       return { a: parts[0], r: parts[1], g: parts[2], b: parts[3] };
@@ -465,9 +475,7 @@ const convertPathData = (data: string): PathDataResult => {
   };
   const readNumber = (): number | null => {
     skipSeparators();
-    const match = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?/.exec(
-      data.slice(i)
-    );
+    const match = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?/.exec(data.slice(i));
     if (!match) return null;
     i += match[0].length;
     return parseFloat(match[0]);
@@ -572,7 +580,12 @@ const convertPathData = (data: string): PathDataResult => {
 
 const isSfntFont = (bytes: Uint8Array): boolean => {
   if (bytes.length < 4) return false;
-  if (bytes[0] === 0x00 && bytes[1] === 0x01 && bytes[2] === 0x00 && bytes[3] === 0x00) {
+  if (
+    bytes[0] === 0x00 &&
+    bytes[1] === 0x01 &&
+    bytes[2] === 0x00 &&
+    bytes[3] === 0x00
+  ) {
     return true;
   }
   const tag = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
@@ -960,7 +973,9 @@ class PageParser {
     const clip = this.readClip(node.getAttribute("Clip"));
     const opacity = attrFloat(node, "Opacity");
     const strokeThickness = attrFloat(node, "StrokeThickness");
-    const dashArray = parseDashArray(node.getAttribute("StrokeDashArray") || "");
+    const dashArray = parseDashArray(
+      node.getAttribute("StrokeDashArray") || ""
+    );
     const dashOffset = attrFloat(node, "StrokeDashOffset");
     const miterLimit = attrFloat(node, "StrokeMiterLimit");
     return {
@@ -983,7 +998,11 @@ class PageParser {
 
   private async parseGeometry(
     node: Element
-  ): Promise<{ d: string; fillRule: "evenodd" | "nonzero"; transform?: number[][] } | null> {
+  ): Promise<{
+    d: string;
+    fillRule: "evenodd" | "nonzero";
+    transform?: number[][];
+  } | null> {
     let geometryNode = node;
     if (node.localName !== "PathGeometry") {
       const child = elementChildren(node).find(
@@ -1009,7 +1028,9 @@ class PageParser {
       }
     }
     let fillRule: "evenodd" | "nonzero" =
-      geometryNode.getAttribute("FillRule") === "NonZero" ? "nonzero" : "evenodd";
+      geometryNode.getAttribute("FillRule") === "NonZero"
+        ? "nonzero"
+        : "evenodd";
     let d = "";
     const figures = geometryNode.getAttribute("Figures");
     if (figures) {
@@ -1042,7 +1063,9 @@ class PageParser {
             break;
           }
           case "PolyLineSegment": {
-            for (const point of parsePoints(segment.getAttribute("Points") || "")) {
+            for (const point of parsePoints(
+              segment.getAttribute("Points") || ""
+            )) {
               parts.push(`L ${round(point[0])} ${round(point[1])}`);
             }
             break;
@@ -1193,8 +1216,7 @@ class PageParser {
         const viewport = parseBox(node.getAttribute("Viewport") || "");
         if (viewport) {
           brush.viewport = viewport;
-          brush.viewportUnits =
-            node.getAttribute("ViewportUnits") || undefined;
+          brush.viewportUnits = node.getAttribute("ViewportUnits") || undefined;
         }
         const viewbox = parseBox(node.getAttribute("Viewbox") || "");
         if (viewbox) {
@@ -1211,7 +1233,8 @@ class PageParser {
           opacity: opacity === null ? 1 : clamp01(opacity),
           startPoint:
             parsePoint(node.getAttribute("StartPoint") || "") || undefined,
-          endPoint: parsePoint(node.getAttribute("EndPoint") || "") || undefined,
+          endPoint:
+            parsePoint(node.getAttribute("EndPoint") || "") || undefined,
           spreadMethod: node.getAttribute("SpreadMethod") || undefined,
           stops: this.parseGradientStops(node),
         };
@@ -1763,7 +1786,10 @@ export const renderXpsPage = async (
     let viewbox = brush.viewbox;
     if (!viewbox || (viewbox[2] <= 0 && viewbox[3] <= 0)) {
       viewbox = [0, 0, image.width || 1, image.height || 1];
-    } else if ((brush.viewboxUnits || "RelativeToBoundingBox") === "RelativeToBoundingBox") {
+    } else if (
+      (brush.viewboxUnits || "RelativeToBoundingBox") ===
+      "RelativeToBoundingBox"
+    ) {
       viewbox = [
         viewbox[0] * image.width,
         viewbox[1] * image.height,
