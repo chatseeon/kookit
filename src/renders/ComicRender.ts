@@ -113,6 +113,21 @@ class ComicRender extends GeneralRender {
       iframeContainer.className = "pdf-container";
       if (this.readerMode === "single") {
         iframeContainer.style.paddingTop = this.element.clientHeight + "px";
+      } else if (this.readerMode === "double") {
+        // double 模式容器高度不能超过可视区高度：宽高比取的是全书采样
+        // 模板值，宽屏上看高图时按比例算出的高度会超出 body（可视高度
+        // 一列）被 overflow 裁掉，导致图片底部不可见，超限时按可视高度
+        // letterbox，图片在 iframe 内经 object-fit:contain 仍完整显示
+        const section = Math.floor(doc.body.clientWidth / 12);
+        const gap = section % 2 === 0 ? section : section - 1;
+        const pageWidth = (doc.body.clientWidth - gap) / 2;
+        const containerHeight = Math.min(
+          pageWidth / aspectRatio,
+          this.element.clientHeight
+        );
+        iframeContainer.style.paddingTop = containerHeight + "px";
+        iframeContainer.style.marginBottom = "2%";
+        iframeContainer.style.overflow = "hidden";
       } else {
         iframeContainer.style.paddingTop = `${(1 / aspectRatio) * 100}%`;
         iframeContainer.style.marginBottom = "2%";
