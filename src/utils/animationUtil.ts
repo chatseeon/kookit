@@ -1,6 +1,6 @@
 import { isRevertDirection } from "./layoutUtil";
 
-function createBookElement(sectionCount, revertDirection: boolean) {
+function createBookElement(sectionCount) {
   let tempDiv = document.getElementById("book");
   if (tempDiv) {
     tempDiv.remove();
@@ -40,7 +40,6 @@ function createBookElement(sectionCount, revertDirection: boolean) {
         float: left;
         margin: 0;
         display: none;
-        ${revertDirection ? "transform: scaleX(-1);" : ""}
       }
 
       #pages section {
@@ -87,7 +86,7 @@ export const addPageAnimation = (
   flipAnimating = false;
 
   const revertDirection = isRevertDirection();
-  createBookElement(Math.max(1, Math.floor(totalPage) + 1), revertDirection);
+  createBookElement(Math.max(1, Math.floor(totalPage) + 1));
   var WINDOW_WIDTH = window.innerWidth;
   var WINDOW_HEIGHT = window.innerHeight;
 
@@ -142,6 +141,10 @@ export const addPageAnimation = (
     });
   }
 
+  // 以当前页初始化翻页状态，避免动画始终从第 0 页开始而错位
+  pageNum = Math.min(pageIndex, Math.max(0, flips.length - 1));
+  resetFlips();
+
   // Resize the canvas to match the book size (with scale reduction for GPU performance)
   canvas.width = (BOOK_WIDTH + CANVAS_PADDING * 2) * CANVAS_SCALE;
   canvas.height = (BOOK_HEIGHT + CANVAS_PADDING * 2) * CANVAS_SCALE;
@@ -174,9 +177,9 @@ export const addPageAnimation = (
     if (!book || !event.touches?.[0]) return;
     const touch = event.touches[0];
     const bookRect = book.getBoundingClientRect();
-    mouse.x =
-      (touch.screenX - bookRect.left - BOOK_WIDTH / 2) *
-      (revertDirection ? -1 : 1);
+    // 保持屏幕坐标：LTR/RTL 统一，折痕的镜像在 render/drawFlip 内处理，
+    // 这样折痕才能稳定地跟随手指而不是被翻转出屏幕外。
+    mouse.x = touch.screenX - bookRect.left - BOOK_WIDTH / 2;
     mouse.y = touch.screenY - bookRect.top;
   }
 
@@ -186,8 +189,8 @@ export const addPageAnimation = (
     touchStartX = touch.screenX;
     // RTL 下左侧拖动的是“下一页”，右侧拖动的是“上一页”
     const dragPreviousPage = revertDirection
-      ? touch.screenX > window.screen.width / 2
-      : touch.screenX < window.screen.width / 2;
+      ? touch.screenX > window.innerWidth / 2
+      : touch.screenX < window.innerWidth / 2;
     if (dragPreviousPage && pageNum - 1 >= 0) {
       flips[pageNum - 1].dragging = true;
     } else if (!dragPreviousPage && pageNum + 1 < flips.length) {
@@ -202,11 +205,12 @@ export const addPageAnimation = (
     const touch = event.changedTouches?.[0];
     if (!touch) return;
     touchEndX = touch.screenX;
+    // mouse.x 此时为屏幕坐标（正值），RTL 下方向与 LTR 相反
     const dragToNext = revertDirection
-      ? mouse.x > -(PAGE_WIDTH / 4) * 3 && touchEndX - touchStartX > 0
+      ? mouse.x > (PAGE_WIDTH / 4) * 1 && touchEndX - touchStartX > 0
       : mouse.x < (PAGE_WIDTH / 4) * 3 && touchEndX - touchStartX < 0;
     const dragToPrev = revertDirection
-      ? mouse.x < -(PAGE_WIDTH / 4) * 1 && touchEndX - touchStartX < 0
+      ? mouse.x < (PAGE_WIDTH / 4) * 3 && touchEndX - touchStartX < 0
       : mouse.x > (PAGE_WIDTH / 4) * 1 && touchEndX - touchStartX > 0;
     for (var i = 0; i < flips.length; i++) {
       // If this flip was being dragged we animate to its destination
@@ -244,7 +248,11 @@ export const addPageAnimation = (
       var flip = flips[i];
 
       if (flip.dragging) {
-        flip.target = Math.max(Math.min(mouse.x / PAGE_WIDTH, 1), -1);
+        // RTL：折痕已绕中线镜像，进度映射取反并偏移，使折痕跟随手指
+        const dragProgress = revertDirection
+          ? 1 - 2 * (mouse.x / PAGE_WIDTH)
+          : mouse.x / PAGE_WIDTH;
+        flip.target = Math.max(Math.min(dragProgress, 1), -1);
       }
 
       flip.progress += (flip.target - flip.progress) * 0.2;
@@ -284,6 +292,14 @@ export const addPageAnimation = (
 
     context.save();
     context.translate(CANVAS_PADDING + BOOK_WIDTH / 2, PAGE_Y + CANVAS_PADDING);
+    // RTL：整张折页（折线 + 纸面 + 阴影）绕书页中线水平镜像。
+    // 不能镜像 #book 外层 DOM：书脊位于屏幕左缘，镜像会把折页反射到
+    // 屏幕外的左半边；这里在绘制层整体镜像，折页才能留在屏幕内，
+    // 且纸面朝向正确，避免上一页翻转时整页被空白纸面遮挡。
+    if (revertDirection) {
+      context.translate(PAGE_WIDTH, 0);
+      context.scale(-1, 1);
+    }
 
     // Draw a sharp shadow on the left side of the page
     context.strokeStyle =
