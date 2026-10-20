@@ -238,10 +238,10 @@ class ComicRender extends GeneralRender {
       } else if (archiveType === "rar" || archiveType === "cbr") {
         this.rpc = await window.RPC.new("./lib/libunrar/worker.js", {
           loaded: function () {
-            console.info("loaded");
+            // ignore
           },
           progressShow: function (fileName, fileSize, progress) {
-            console.info(progress);
+            // ignore
           },
         });
         await new Promise((r) => setTimeout(r, 200));
@@ -1012,7 +1012,10 @@ class ComicRender extends GeneralRender {
       if (isNaN(chapterDocIndex)) {
         chapterDocIndex = 0;
       }
-      if (chapterDocIndex < 0 || chapterDocIndex > this.chapterDocList.length - 1) {
+      if (
+        chapterDocIndex < 0 ||
+        chapterDocIndex > this.chapterDocList.length - 1
+      ) {
         return [];
       }
     }
