@@ -439,7 +439,9 @@ export const addAndroidTouchEvent = (
       readerMode !== "scroll"
     ) {
       isDragging = false;
-      render.mouseUpHandler(event);
+      // animation 为 none 时 mouseUpHandler 未安装，防御性调用避免
+      // TypeError 中断 touchend 的后续 tap 分类
+      render.mouseUpHandler?.(event);
       if (revertDirection) {
         if (
           touch.screenX > (window.innerWidth / 4) * 1 &&
@@ -691,6 +693,17 @@ export const addAndroidTouchEvent = (
   doc.addEventListener("touchend", onTouchEnd, false);
   doc.addEventListener("touchstart", onTouchStart, false);
   doc.addEventListener("touchmove", onTouchMove, false);
+  // 拖拽被外层手势系统（如 RN GestureDetector）接管时 WebView 收到的是
+  // touchcancel 而非 touchend；若不重置拖拽状态，isDragging 会一直残留，
+  // 后续所有 touchend 都被劫持进翻页分支，tap 分类（左右翻页/中央菜单）失效
+  doc.addEventListener(
+    "touchcancel",
+    () => {
+      isDragging = false;
+      pinchZoomed = false;
+    },
+    false
+  );
   doc.addEventListener(
     "pointermove",
     (event) => {
@@ -984,7 +997,9 @@ export const addAppleTouchEvent = (
       readerMode !== "scroll"
     ) {
       isDragging = false;
-      render.mouseUpHandler(event);
+      // animation 为 none 时 mouseUpHandler 未安装，防御性调用避免
+      // TypeError 中断 touchend 的后续 tap 分类
+      render.mouseUpHandler?.(event);
       if (revertDirection) {
         if (
           touchEndX > (window.innerWidth / 4) * 1 &&
@@ -1296,6 +1311,17 @@ export const addAppleTouchEvent = (
   doc.addEventListener("touchend", onTouchEnd, { passive: false });
   doc.addEventListener("touchstart", onTouchStart, { passive: false });
   doc.addEventListener("touchmove", onTouchMove, { passive: false });
+  // 拖拽被外层手势系统（如 RN GestureDetector）接管时 WebView 收到的是
+  // touchcancel 而非 touchend；若不重置拖拽状态，isDragging 会一直残留，
+  // 后续所有 touchend 都被劫持进翻页分支，tap 分类（左右翻页/中央菜单）失效
+  doc.addEventListener(
+    "touchcancel",
+    () => {
+      isDragging = false;
+      pinchZoomed = false;
+    },
+    { passive: false }
+  );
   doc.addEventListener(
     "pointermove",
     (event) => {
