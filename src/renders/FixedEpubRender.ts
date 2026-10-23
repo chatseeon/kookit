@@ -1,5 +1,6 @@
 import ComicRender from "./ComicRender";
 import EpubRender from "./EpubRender";
+import GeneralParser from "../utils/generalParser";
 import {
   applyResolvedRevertDirection,
   getScrollLeftForLogical,
@@ -303,6 +304,12 @@ class FixedEpubRender extends ComicRender {
       this.revertDirection,
       this.book?.dir
     );
+  }
+  async getMetadata() {
+    if (!this.book) {
+      await this.parse();
+    }
+    return await new GeneralParser(this.book).getMetadata();
   }
   async handleComicScrollEvent(doc: Document) {
     if (!this.hasBlankSlots()) return super.handleComicScrollEvent(doc);

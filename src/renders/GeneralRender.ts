@@ -1647,6 +1647,9 @@ class GeneralRender extends EventEmitter {
     styleElement.appendChild(document.createTextNode(fontFaceCSS));
     doc.head.appendChild(styleElement);
   }
+  isMangaLayout() {
+    return false;
+  }
   getAllDocuments() {
     let doc = this.getDocument();
     if (!doc) return [];
@@ -1658,7 +1661,8 @@ class GeneralRender extends EventEmitter {
       this.format !== "DJVU" &&
       this.format !== "DJV" &&
       this.format !== "OFD" &&
-      !this.format?.startsWith("CB")
+      !this.format?.startsWith("CB") &&
+      !this.isMangaLayout()
     ) {
       return [doc];
     }
@@ -1683,7 +1687,8 @@ class GeneralRender extends EventEmitter {
       this.format !== "DJVU" &&
       this.format !== "DJV" &&
       this.format !== "OFD" &&
-      !this.format?.startsWith("CB")
+      !this.format?.startsWith("CB") &&
+      !this.isMangaLayout()
     ) {
       return [iframe];
     }
