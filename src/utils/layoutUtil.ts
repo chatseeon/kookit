@@ -58,11 +58,7 @@ export const getScrollLeftForContentOffset = (
 };
 // 这些语言的正文本身是从右往左排的，不能强制子元素 direction:ltr
 const RTL_LANGUAGES = /^(ar|he|fa|ur|yi|dv|ps|sd|ug|ckb)$/i;
-/**
- * revertDirection 打开时把正文整体排成 RTL 多栏。
- * 原文本身是 RTL 语种时保留子元素方向；横排语种则把正文子元素固定为 ltr，
- * 否则每个段落都会被倒排。
- */
+// RTL 多栏排版；RTL 语种保留子元素方向，横排语种固定为 ltr
 export const applyRevertDirectionStyle = (
   doc: Document,
   language?: string | string[]

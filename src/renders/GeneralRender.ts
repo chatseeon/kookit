@@ -106,6 +106,8 @@ class GeneralRender extends EventEmitter {
   estimatedSizePerPage: number | null = null;
   speedReadingSpeed: number = 300;
   revertDirection: string = "no";
+  // 原始设置：auto/空值需等书籍方向解析后再落成 yes/no
+  revertDirectionConfig: string = "";
   platform: string = "web";
   isAllowScript: string = "no";
   touchEventSet: any;
@@ -175,6 +177,7 @@ class GeneralRender extends EventEmitter {
     this.backgroundColor = config.backgroundColor || "";
     this.textOrientation = config.textOrientation;
     window.textOrientation = config.textOrientation;
+    this.revertDirectionConfig = config.revertDirection || "";
     this.revertDirection = config.revertDirection || "no";
     window.revertDirection = this.revertDirection;
     this.isShowTotalPage = config.isShowTotalPage || "no";

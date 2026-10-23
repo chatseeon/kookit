@@ -90,7 +90,7 @@ class FixedEpubRender extends ComicRender {
       return;
     }
     if (!zipEntries.size) return;
-    // 各页解析互相独立，用 4 路并发避免逐页串行解压阻塞首屏
+    // 4 路并发，避免逐页解压拖慢首屏
     const count = this.chapterDocList.length;
     const pageRatios: (number | null)[] = new Array(count).fill(null);
     let cursor = 0;
@@ -187,8 +187,7 @@ class FixedEpubRender extends ComicRender {
     const rtl = this.revertDirection === "yes";
     for (let i = 0; i < this.chapterDocList.length; i++) {
       const spread = this.book?.sections?.[i]?.pageSpread;
-      // page-spread-center 表示跨页插图：独占一屏，
-      // 借用横版页的全宽容器（-2）
+      // center 是跨页插图，独占一屏（复用横版页的 -2 容器）
       if (spread === "center") {
         if (this.slotPageMap.length % 2 !== 0) {
           this.slotPageMap.push(-1);
@@ -205,7 +204,7 @@ class FixedEpubRender extends ComicRender {
         this.slotPageMap.push(i, -2);
         continue;
       }
-      // 封面单独一屏：RTL 在右栏、LTR 在左栏，后页从下一屏开始配对
+      // 封面单独一屏：RTL 居右，LTR 居左
       if (i === 0 && !spread) {
         if (rtl) {
           this.slotPageMap.push(0, -1);
@@ -288,12 +287,12 @@ class FixedEpubRender extends ComicRender {
       iframeContainer.className = "pdf-container";
       if (isLandscape) {
         iframeContainer.style.width = doc.body.clientWidth + "px";
-        // 此处 handlePDFLayout 还没执行，body 高度仍为 0，必须取外层可视高度
+        // handlePDFLayout 尚未执行，取外层可视高度
         iframeContainer.style.paddingTop =
           (this.element.clientHeight || doc.documentElement.clientHeight) + "px";
         iframeContainer.style.marginBottom = "0px";
       } else if (isBlank) {
-        // 空白槽同样要撑满一屏，否则后面的页会被排进来
+        // 空白槽需撑满一屏，避免后续页被排入
         iframeContainer.style.paddingTop =
           (this.element.clientHeight || doc.documentElement.clientHeight) + "px";
         iframeContainer.style.marginBottom = "0px";
@@ -334,7 +333,7 @@ class FixedEpubRender extends ComicRender {
     await epubRender.parse();
     this.book = epubRender.book;
     this.revertDirection = applyResolvedRevertDirection(
-      this.revertDirection,
+      this.revertDirectionConfig,
       this.book?.dir
     );
   }
@@ -405,13 +404,16 @@ class FixedEpubRender extends ComicRender {
     const start = this.getSpreadStart(index);
     const slot = this.pageSlotMap[start];
     if (slot === undefined) return super.getImageList(chapterDocIndex);
+    // 所选页可能在本屏右槽，按整屏取图
+    const firstSlot = slot - (slot % 2);
     const pages: number[] = [];
     for (let offset = 0; offset < 2; offset++) {
-      const page = this.slotPageMap[slot + offset];
+      const page = this.slotPageMap[firstSlot + offset];
       if (page !== undefined && page >= 0 && pages.indexOf(page) === -1) {
         pages.push(page);
       }
     }
+    if (!pages.length) return super.getImageList(chapterDocIndex);
     const urls: string[] = [];
     for (const page of pages) {
       const url = await this.getComicImageUrl(page);
@@ -450,6 +452,7 @@ class FixedEpubRender extends ComicRender {
     }
     let index = parseInt(bookLocation.chapterDocIndex);
     if (!Number.isFinite(index)) index = 0;
+    const savedIndex = index;
     index = this.getSpreadStart(index);
     this.tempLocation = {
       text: bookLocation.text,
@@ -460,6 +463,15 @@ class FixedEpubRender extends ComicRender {
       page: bookLocation.page,
       percentage: bookLocation.percentage,
     };
+    // 归一化后 index 不变，需同步标题/链接/进度
+    if (index !== savedIndex && this.chapterDocList[index]) {
+      this.tempLocation.chapterHref = this.chapterDocList[index].href;
+      this.tempLocation.chapterTitle = this.chapterDocList[index].label;
+      this.tempLocation.percentage =
+        this.chapterDocList.length === 1
+          ? "1"
+          : index / (this.chapterDocList.length - 1) + "";
+    }
     await this.renderComicPage(index);
     await this.scrollToPage(index);
     await this.recordByChapter(index);

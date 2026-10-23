@@ -147,7 +147,7 @@ class ComicRender extends GeneralRender {
     ) {
       return;
     }
-    // 封面单独一屏：RTL 在右栏、LTR 在左栏，后页从下一屏开始配对
+    // 封面单独一屏：RTL 居右，LTR 居左
     if (isRevertDirection()) {
       this.comicSlotPageMap.push(0, -1);
     } else {
@@ -218,8 +218,7 @@ class ComicRender extends GeneralRender {
         : "pdf-container-" + index;
       iframeContainer.className = "pdf-container";
       if (isBlank) {
-        // 占位槽要占满一屏，否则后面的页会被排进来。
-        // 此时 body 还没有被 handlePDFLayout 撑开，不能用 body.clientHeight
+        // 占位槽要撑满一屏；此时 body 尚未被 handlePDFLayout 撑开
         iframeContainer.style.paddingTop =
           (this.element.clientHeight || doc.documentElement.clientHeight) + "px";
         iframeContainer.style.marginBottom = "0px";
@@ -1156,15 +1155,24 @@ class ComicRender extends GeneralRender {
     if (this.readerMode === "double") {
       if (this.hasComicBlankSlots()) {
         const start = this.getComicSpreadStart(chapterDocIndex);
-        const slot = this.comicPageSlotMap[start] ?? 0;
-        indices = [start];
-        const other = this.comicSlotPageMap[slot + 1];
-        if (
-          other !== undefined &&
-          other >= 0 &&
-          other < this.chapterDocList.length
-        ) {
-          indices.push(other);
+        const slot = this.comicPageSlotMap[start];
+        if (slot === undefined) {
+          indices = [start];
+        } else {
+          // 所选页可能在本屏右槽，按整屏取图，避免 LTR 封面带上下一页
+          const firstSlot = slot - (slot % 2);
+          indices = [];
+          for (let offset = 0; offset < 2; offset++) {
+            const page = this.comicSlotPageMap[firstSlot + offset];
+            if (
+              page !== undefined &&
+              page >= 0 &&
+              page < this.chapterDocList.length
+            ) {
+              indices.push(page);
+            }
+          }
+          if (!indices.length) indices = [start];
         }
       } else if (chapterDocIndex % 2 === 0) {
         indices = [chapterDocIndex, chapterDocIndex + 1];

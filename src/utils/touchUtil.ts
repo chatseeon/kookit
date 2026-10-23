@@ -63,7 +63,7 @@ export const slideAnimateTo = (
   gap: number
 ) => {
   let pageWidth = element.clientWidth + gap;
-  // 固定版式 EPUB 同样是外层多栏结构，滑动要作用于外层文档
+  // 固定版式 EPUB 是多栏结构，滑动作用于外层文档
   let tempDoc =
     isPaginatedFormat(format) || render?.isMangaLayout?.() ? outerDoc : doc;
   const revertDirection = isRevertDirection();
@@ -394,7 +394,7 @@ export const addAndroidTouchEvent = (
   let lastTouchEnd = 0;
   const swipeThreshold = 30; // Minimum distance in pixels to be considered a swipe
   const timeThreshold = 500; // Maximum time in milliseconds to be considered a tap
-  // 紧排标记挂在外层文档 body 上，子 iframe 文档读不到
+  // 紧排标记在外层文档上
   let gap = getPageGap(element.clientWidth, render.getDocument?.() || doc);
   let pageWidth = element.clientWidth + gap;
   const revertDirection = isRevertDirection();
@@ -677,7 +677,9 @@ export const addAndroidTouchEvent = (
     }
     // If we're in dragging mode, apply direct transform for better performance
     if (isDragging && animation === "sliding" && readerMode !== "scroll") {
-      let tempDoc = isPaginatedFormat(format) ? outerDoc : doc;
+      // 拖动阶段与 slideAnimateTo 使用同一个滚动文档
+      let tempDoc =
+        isPaginatedFormat(format) || render?.isMangaLayout?.() ? outerDoc : doc;
       // Calculate the delta since last move event
       const deltaX = touchCurrentX - lastTouchX;
 
@@ -958,7 +960,7 @@ export const addAppleTouchEvent = (
   let lastSelectEnd = 0;
   let swipeThreshold = 30; // Minimum distance in pixels to be considered a swipe
   const timeThreshold = 500; // Maximum time in milliseconds to be considered a tap
-  // 紧排标记挂在外层文档 body 上，子 iframe 文档读不到
+  // 紧排标记在外层文档上
   let gap = getPageGap(element.clientWidth, render.getDocument?.() || doc);
   const revertDirection = isRevertDirection();
   const selectionAutoTurn = createSelectionAutoTurn({
@@ -1292,7 +1294,9 @@ export const addAppleTouchEvent = (
     // If we're in dragging mode, apply direct transform for better performance
     if (isDragging && animation === "sliding" && readerMode !== "scroll") {
       window.isSwiping = true;
-      let tempDoc = isPaginatedFormat(format) ? outerDoc : doc;
+      // 拖动阶段与 slideAnimateTo 使用同一个滚动文档
+      let tempDoc =
+        isPaginatedFormat(format) || render?.isMangaLayout?.() ? outerDoc : doc;
       // Calculate the delta since last move event
       const deltaX = touchCurrentX - lastTouchX;
 

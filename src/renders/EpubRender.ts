@@ -23,7 +23,7 @@ class EpubRender extends GeneralRender {
         await this.parse();
       }
       this.revertDirection = applyResolvedRevertDirection(
-        this.revertDirection,
+        this.revertDirectionConfig,
         this.book?.dir
       );
       let parser = new GeneralParser(this.book);
