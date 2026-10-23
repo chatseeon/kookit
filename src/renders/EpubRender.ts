@@ -32,7 +32,12 @@ class EpubRender extends GeneralRender {
       createIframe(element, this.isAllowScript);
       let doc = this.getDocument();
       if (!doc) return;
-      handleLayout(element, this.readerMode, doc);
+      handleLayout(
+        element,
+        this.readerMode,
+        doc,
+        this.book?.metadata?.language
+      );
       resolve();
     });
   }

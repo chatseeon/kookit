@@ -90,32 +90,46 @@ class FixedEpubRender extends ComicRender {
       return;
     }
     if (!zipEntries.size) return;
-    const ratios: number[] = [];
-    for (let i = 0; i < this.chapterDocList.length; i++) {
-      let ratio: number | null = null;
-      try {
-        const section = this.book?.sections?.[i];
-        if (section?.createDocument) {
-          const doc = await section.createDocument();
-          const href = this.getDocumentImageHref(doc);
-          if (href) {
-            const resolved = section.resolveHref
-              ? section.resolveHref(href)
-              : href;
-            const entry = findZipEntry(zipEntries, resolved);
-            const size = entry
-              ? getZipImageSize(this.comicBuffer, entry)
-              : null;
-            if (size) ratio = size.width / size.height;
+    // 各页解析互相独立，用 4 路并发避免逐页串行解压阻塞首屏
+    const count = this.chapterDocList.length;
+    const pageRatios: (number | null)[] = new Array(count).fill(null);
+    let cursor = 0;
+    const detectOne = async () => {
+      while (true) {
+        const i = cursor++;
+        if (i >= count) return;
+        try {
+          const section = this.book?.sections?.[i];
+          if (section?.createDocument) {
+            const doc = await section.createDocument();
+            const href = this.getDocumentImageHref(doc);
+            let ratio: number | null = null;
+            if (href) {
+              const resolved = section.resolveHref
+                ? section.resolveHref(href)
+                : href;
+              const entry = findZipEntry(zipEntries, resolved);
+              const size = entry
+                ? getZipImageSize(this.comicBuffer, entry)
+                : null;
+              if (size) ratio = size.width / size.height;
+            }
+            if (!ratio) ratio = this.getDocumentAspectRatio(doc);
+            pageRatios[i] = ratio;
           }
-          if (!ratio) ratio = this.getDocumentAspectRatio(doc);
+        } catch (error) {
+          // 单页失败不影响其他页
         }
-      } catch (error) {
-        // 单页失败不影响其他页
       }
-      this.pageAspectRatios[i] = ratio;
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(4, count) }, () => detectOne())
+    );
+    const ratios: number[] = [];
+    this.pageAspectRatios = pageRatios;
+    pageRatios.forEach((ratio) => {
       if (ratio && ratio > 0) ratios.push(ratio);
-    }
+    });
     if (!ratios.length) return;
     // 以中位数为基准，明显更宽的判为横版页
     const sorted = ratios.slice().sort((a, b) => a - b);
@@ -172,6 +186,17 @@ class FixedEpubRender extends ComicRender {
     if (this.readerMode !== "double") return;
     const rtl = this.revertDirection === "yes";
     for (let i = 0; i < this.chapterDocList.length; i++) {
+      const spread = this.book?.sections?.[i]?.pageSpread;
+      // page-spread-center 表示跨页插图：独占一屏，
+      // 借用横版页的全宽容器（-2）
+      if (spread === "center") {
+        if (this.slotPageMap.length % 2 !== 0) {
+          this.slotPageMap.push(-1);
+        }
+        this.slotPageMap.push(i, -2);
+        this.landscapePages.add(i);
+        continue;
+      }
       // 横版页独占一屏，下一槽位留空
       if (this.landscapePages.has(i)) {
         if (this.slotPageMap.length % 2 !== 0) {
@@ -180,9 +205,13 @@ class FixedEpubRender extends ComicRender {
         this.slotPageMap.push(i, -2);
         continue;
       }
-      const spread = this.book?.sections?.[i]?.pageSpread;
-      if (i === 0 && rtl && !spread) {
-        this.slotPageMap.push(0, -1);
+      // 封面单独一屏：RTL 在右栏、LTR 在左栏，后页从下一屏开始配对
+      if (i === 0 && !spread) {
+        if (rtl) {
+          this.slotPageMap.push(0, -1);
+        } else {
+          this.slotPageMap.push(-1, 0);
+        }
         continue;
       }
       if (spread === "left" || spread === "right") {
@@ -259,10 +288,14 @@ class FixedEpubRender extends ComicRender {
       iframeContainer.className = "pdf-container";
       if (isLandscape) {
         iframeContainer.style.width = doc.body.clientWidth + "px";
-        iframeContainer.style.paddingTop = doc.body.clientHeight + "px";
+        // 此处 handlePDFLayout 还没执行，body 高度仍为 0，必须取外层可视高度
+        iframeContainer.style.paddingTop =
+          (this.element.clientHeight || doc.documentElement.clientHeight) + "px";
         iframeContainer.style.marginBottom = "0px";
       } else if (isBlank) {
-        iframeContainer.style.paddingTop = doc.body.clientHeight + "px";
+        // 空白槽同样要撑满一屏，否则后面的页会被排进来
+        iframeContainer.style.paddingTop =
+          (this.element.clientHeight || doc.documentElement.clientHeight) + "px";
         iframeContainer.style.marginBottom = "0px";
       } else {
         iframeContainer.style.paddingTop = containerHeight + "px";

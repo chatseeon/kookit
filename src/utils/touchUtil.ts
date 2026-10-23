@@ -63,7 +63,9 @@ export const slideAnimateTo = (
   gap: number
 ) => {
   let pageWidth = element.clientWidth + gap;
-  let tempDoc = isPaginatedFormat(format) ? outerDoc : doc;
+  // 固定版式 EPUB 同样是外层多栏结构，滑动要作用于外层文档
+  let tempDoc =
+    isPaginatedFormat(format) || render?.isMangaLayout?.() ? outerDoc : doc;
   const revertDirection = isRevertDirection();
   const toLogical = (value: number) => (revertDirection ? -value : value);
   const toScroll = (value: number) => (revertDirection ? -value : value);
@@ -392,7 +394,8 @@ export const addAndroidTouchEvent = (
   let lastTouchEnd = 0;
   const swipeThreshold = 30; // Minimum distance in pixels to be considered a swipe
   const timeThreshold = 500; // Maximum time in milliseconds to be considered a tap
-  let gap = getPageGap(element.clientWidth, doc);
+  // 紧排标记挂在外层文档 body 上，子 iframe 文档读不到
+  let gap = getPageGap(element.clientWidth, render.getDocument?.() || doc);
   let pageWidth = element.clientWidth + gap;
   const revertDirection = isRevertDirection();
   const selectionAutoTurn = createSelectionAutoTurn({
@@ -955,7 +958,8 @@ export const addAppleTouchEvent = (
   let lastSelectEnd = 0;
   let swipeThreshold = 30; // Minimum distance in pixels to be considered a swipe
   const timeThreshold = 500; // Maximum time in milliseconds to be considered a tap
-  let gap = getPageGap(element.clientWidth, doc);
+  // 紧排标记挂在外层文档 body 上，子 iframe 文档读不到
+  let gap = getPageGap(element.clientWidth, render.getDocument?.() || doc);
   const revertDirection = isRevertDirection();
   const selectionAutoTurn = createSelectionAutoTurn({
     element,

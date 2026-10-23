@@ -56,15 +56,38 @@ export const getScrollLeftForContentOffset = (
   const logical = Math.max(0, Math.min(contentOffset, maxScroll));
   return isRevertDirection() ? logical - maxScroll : logical;
 };
-export const applyRevertDirectionStyle = (doc: Document) => {
+// 这些语言的正文本身是从右往左排的，不能强制子元素 direction:ltr
+const RTL_LANGUAGES = /^(ar|he|fa|ur|yi|dv|ps|sd|ug|ckb)$/i;
+/**
+ * revertDirection 打开时把正文整体排成 RTL 多栏。
+ * 原文本身是 RTL 语种时保留子元素方向；横排语种则把正文子元素固定为 ltr，
+ * 否则每个段落都会被倒排。
+ */
+export const applyRevertDirectionStyle = (
+  doc: Document,
+  language?: string | string[]
+) => {
   if (!isRevertDirection()) return;
   doc.documentElement.setAttribute("data-kookit-revert-direction", "yes");
   if (doc.getElementById("kookit-revert-direction-style")) return;
+  // epub.js 的元数据可能给出数组，取第一个语种
+  const languageText = Array.isArray(language) ? language[0] : language;
+  const primaryLanguage = String(languageText || "")
+    .trim()
+    .toLowerCase()
+    .split(/[-_]/)[0];
+  const explicitRtl =
+    doc.documentElement?.getAttribute("dir") === "rtl" ||
+    doc.body?.getAttribute("dir") === "rtl";
+  const rtlContent = explicitRtl || RTL_LANGUAGES.test(primaryLanguage);
   const style = doc.createElement("style");
   style.id = "kookit-revert-direction-style";
+  // body 的 rtl 用于多栏排版方向；只有横排非 RTL 语种才把正文子元素固定为 ltr
   style.textContent =
     'html[data-kookit-revert-direction="yes"] body{direction:rtl !important;}' +
-    'html[data-kookit-revert-direction="yes"] body>*:not([dir]){direction:ltr;}';
+    (rtlContent
+      ? ""
+      : 'html[data-kookit-revert-direction="yes"] body>*:not([dir]){direction:ltr;}');
   (doc.head || doc.documentElement).appendChild(style);
 };
 export const convertStyleNum = (value: number) => {
@@ -811,7 +834,8 @@ export const handleImageSize = async (
 export const handleLayout = (
   element: HTMLElement,
   readerMode: string,
-  doc: Document
+  doc: Document,
+  language?: string | string[]
 ) => {
   let style = doc.createElement("style");
   style.id = "default-style";
@@ -854,7 +878,7 @@ export const handleLayout = (
       `margin: 0px !important; padding: 0px !important; overflow: unset !important;`
     );
   }
-  applyRevertDirectionStyle(doc);
+  applyRevertDirectionStyle(doc, language);
 };
 
 export const isElement = (obj) => {

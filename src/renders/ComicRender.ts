@@ -5,6 +5,7 @@ import {
   getActualOffsetLeft,
   getActualOffsetTop,
   getScrollLeftForLogical,
+  isRevertDirection,
 } from "../utils/layoutUtil";
 import GeneralParser from "../utils/generalParser";
 import { makeComicBook } from "../libs/comic-book";
@@ -146,7 +147,12 @@ class ComicRender extends GeneralRender {
     ) {
       return;
     }
-    this.comicSlotPageMap.push(0, -1);
+    // 封面单独一屏：RTL 在右栏、LTR 在左栏，后页从下一屏开始配对
+    if (isRevertDirection()) {
+      this.comicSlotPageMap.push(0, -1);
+    } else {
+      this.comicSlotPageMap.push(-1, 0);
+    }
     for (let i = 1; i < this.chapterDocList.length; i++) {
       this.comicSlotPageMap.push(i);
     }
@@ -212,8 +218,10 @@ class ComicRender extends GeneralRender {
         : "pdf-container-" + index;
       iframeContainer.className = "pdf-container";
       if (isBlank) {
-        // 占位槽要占满一屏，否则后面的页会被排进来
-        iframeContainer.style.paddingTop = doc.body.clientHeight + "px";
+        // 占位槽要占满一屏，否则后面的页会被排进来。
+        // 此时 body 还没有被 handlePDFLayout 撑开，不能用 body.clientHeight
+        iframeContainer.style.paddingTop =
+          (this.element.clientHeight || doc.documentElement.clientHeight) + "px";
         iframeContainer.style.marginBottom = "0px";
         iframeContainer.style.overflow = "hidden";
         iframeContainer.style.breakInside = "avoid";
