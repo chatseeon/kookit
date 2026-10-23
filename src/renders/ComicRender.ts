@@ -1037,7 +1037,8 @@ class ComicRender extends GeneralRender {
       )
     ) {
       this.handleComicRecordByContainer(
-        subContainers[subContainers.length - 1] as HTMLElement
+        subContainers[subContainers.length - 1] as HTMLElement,
+        true
       );
       return;
     }
@@ -1057,11 +1058,18 @@ class ComicRender extends GeneralRender {
       }
     }
   }
-  handleComicRecordByContainer(subContainer: HTMLElement) {
+  handleComicRecordByContainer(
+    subContainer: HTMLElement,
+    normalizeSpreadStart = false
+  ) {
     let id = subContainer.getAttribute("id");
     if (!id) return;
     if (id.indexOf("-blank-") > -1) return;
     let chapterDocIndex = parseInt(id.split("-").reverse()[0]);
+    // 末屏快捷路径命中的是右页，统一记录为对页起始页
+    if (normalizeSpreadStart) {
+      chapterDocIndex = this.getComicSpreadStart(chapterDocIndex);
+    }
     this.handleComicRecordByIndex(chapterDocIndex);
   }
   getProgress() {

@@ -1698,7 +1698,10 @@ class GeneralRender extends EventEmitter {
     let iframeElements: HTMLIFrameElement[] = [];
     iframes.forEach((iframe) => {
       let iframeElement = iframe as HTMLIFrameElement;
-      iframeElements.push(iframeElement);
+      // 与 getAllDocuments 保持一致，避免两个列表错位
+      if (iframeElement.contentDocument) {
+        iframeElements.push(iframeElement);
+      }
     });
     return [iframe, ...iframeElements];
   }

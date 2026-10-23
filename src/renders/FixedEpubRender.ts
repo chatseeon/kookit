@@ -333,9 +333,12 @@ class FixedEpubRender extends ComicRender {
     }
   }
   // 空白槽没有页码，跳过
-  handleComicRecordByContainer(subContainer: HTMLElement) {
+  handleComicRecordByContainer(
+    subContainer: HTMLElement,
+    normalizeSpreadStart = false
+  ) {
     if (subContainer.id && subContainer.id.indexOf("-blank-") > -1) return;
-    super.handleComicRecordByContainer(subContainer);
+    super.handleComicRecordByContainer(subContainer, normalizeSpreadStart);
   }
   async handleComicRecord(doc: Document) {
     if (!this.hasBlankSlots()) return super.handleComicRecord(doc);
@@ -446,17 +449,26 @@ class FixedEpubRender extends ComicRender {
       subIframe = createPDFIframe(chapterDocIndex, doc) as HTMLIFrameElement;
     }
     if (!subIframe) return;
-    if (subIframe.getAttribute(FIXED_PAGE_ATTR) === "yes") return;
+    if (subIframe.getAttribute(FIXED_PAGE_ATTR)) return;
     const url = await this.chapterDocList[chapterDocIndex].text.load();
     if (!url) return;
-    subIframe.setAttribute(FIXED_PAGE_ATTR, "yes");
+    subIframe.setAttribute(FIXED_PAGE_ATTR, "loading");
     if (this.isAllowScript !== "yes") {
       // 默认不执行书内脚本
       subIframe.setAttribute("sandbox", "allow-same-origin");
     }
-    subIframe.onload = () => injectFixedPageStyle(subIframe);
+    subIframe.onload = () => {
+      const loadedDoc = subIframe.contentDocument;
+      // 加载失败时清掉标记，下次滚动可重试
+      if (!loadedDoc || loadedDoc.URL !== url) {
+        subIframe.removeAttribute(FIXED_PAGE_ATTR);
+        return;
+      }
+      injectFixedPageStyle(subIframe);
+      subIframe.setAttribute(FIXED_PAGE_ATTR, "yes");
+      this.trigger("rendered", [chapterDocIndex] as any);
+    };
     subIframe.src = url;
-    this.trigger("rendered", [chapterDocIndex] as any);
   }
   async handleUnloadComicChapter(chapterDocIndex: number) {
     if (
@@ -471,7 +483,7 @@ class FixedEpubRender extends ComicRender {
       "pdf-iframe-" + chapterDocIndex
     ) as HTMLIFrameElement | null;
     if (!subIframe) return;
-    if (subIframe.getAttribute(FIXED_PAGE_ATTR) !== "yes") return;
+    if (!subIframe.getAttribute(FIXED_PAGE_ATTR)) return;
     subIframe.removeAttribute(FIXED_PAGE_ATTR);
     subIframe.onload = null;
     subIframe.src = "about:blank";

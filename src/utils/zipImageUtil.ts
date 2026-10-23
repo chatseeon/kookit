@@ -181,7 +181,7 @@ const parseGifSize = (bytes: Uint8Array, length: number): ImageSize | null => {
 
 const parseWebpSize = (bytes: Uint8Array, length: number): ImageSize | null => {
   if (
-    length < 30 ||
+    length < 16 ||
     bytes[0] !== 0x52 ||
     bytes[1] !== 0x49 ||
     bytes[2] !== 0x46 ||
@@ -194,7 +194,7 @@ const parseWebpSize = (bytes: Uint8Array, length: number): ImageSize | null => {
     return null;
   }
   const chunk = String.fromCharCode(bytes[12], bytes[13], bytes[14], bytes[15]);
-  if (chunk === "VP8 ") {
+  if (chunk === "VP8 " && length >= 30) {
     const width = (bytes[26] | (bytes[27] << 8)) & 0x3fff;
     const height = (bytes[28] | (bytes[29] << 8)) & 0x3fff;
     return width > 0 && height > 0 ? { width, height } : null;
