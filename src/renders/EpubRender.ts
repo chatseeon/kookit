@@ -1,4 +1,8 @@
-import { createIframe, handleLayout } from "../utils/layoutUtil";
+import {
+  applyResolvedRevertDirection,
+  createIframe,
+  handleLayout,
+} from "../utils/layoutUtil";
 import GeneralParser from "../utils/generalParser";
 import { EPUB } from "../libs/epub";
 import GeneralRender from "./GeneralRender";
@@ -18,6 +22,10 @@ class EpubRender extends GeneralRender {
       if (!this.book) {
         await this.parse();
       }
+      this.revertDirection = applyResolvedRevertDirection(
+        this.revertDirection,
+        this.book?.dir
+      );
       let parser = new GeneralParser(this.book);
       this.chapterList = await parser.getChapter(this.book.toc);
       this.chapterDocList = await parser.getChapterDoc();

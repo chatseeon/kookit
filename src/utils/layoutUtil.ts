@@ -11,6 +11,22 @@ export const isVerticalLayout = (): boolean => {
 export const isRevertDirection = (): boolean => {
   return window.revertDirection === "yes" && !isVerticalLayout();
 };
+// 显式 yes/no 优先，否则跟随书籍元数据
+export const resolveRevertDirection = (
+  configured?: string,
+  bookDirection?: string
+): string => {
+  if (configured === "yes" || configured === "no") return configured;
+  return bookDirection === "rtl" ? "yes" : "no";
+};
+export const applyResolvedRevertDirection = (
+  configured?: string,
+  bookDirection?: string
+): string => {
+  const resolved = resolveRevertDirection(configured, bookDirection);
+  window.revertDirection = resolved;
+  return resolved;
+};
 export const getMaxHorizontalScroll = (scroller: HTMLElement): number => {
   return Math.max(0, scroller.scrollWidth - scroller.clientWidth);
 };

@@ -1,3 +1,4 @@
+import { getPageGap } from "./pageGapUtil";
 declare var window: any;
 export const classes = [
   "color-0",
@@ -221,12 +222,16 @@ export function getStylePxNumber(
   return Number.isFinite(num) && num > 0 ? num : null;
 }
 
-export function getPageWidth(element: HTMLElement, readerMode: string): number {
+export function getPageWidth(
+  element: HTMLElement,
+  readerMode: string,
+  doc?: Document
+): number {
   if (!element) return 0;
-  const section = Math.floor(element.clientWidth / 12);
-  const gap = section % 2 === 0 ? section : section - 1;
+  const width = doc?.body?.clientWidth || element.clientWidth;
+  const gap = getPageGap(width, doc);
   const scale = readerMode === "double" ? 2 : 1;
-  return (element.clientWidth - gap) / scale;
+  return (width - gap) / scale;
 }
 export const detectLocalLanguage = (text: string): string => {
   const chinesePattern = /[\u4e00-\u9fff\u3000-\u303f\uf900-\ufaff]/g;

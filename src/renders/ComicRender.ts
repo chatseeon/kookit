@@ -4,6 +4,7 @@ import {
   createIframe,
   getActualOffsetLeft,
   getActualOffsetTop,
+  getScrollLeftForLogical,
 } from "../utils/layoutUtil";
 import GeneralParser from "../utils/generalParser";
 import { makeComicBook } from "../libs/comic-book";
@@ -20,11 +21,20 @@ import {
   isPDFScrolledIntoView,
 } from "../utils/pdfUtil.js";
 import { handleScrollPage } from "../utils/navigationUtil.js";
+import {
+  alignPageContentToCenter,
+  getPageGap,
+  setTightDoublePage,
+} from "../utils/pageGapUtil";
 declare var window: any;
+
+// 封面单页模式下的空白占位槽
+const COMIC_BLANK_SLOT_MARK = "pdf-container-blank-";
 
 class ComicRender extends GeneralRender {
   comicBuffer: ArrayBuffer;
   readerMode: string;
+  config: any;
   book: any;
   format: string;
   chapterList: Chapter[];
@@ -41,9 +51,12 @@ class ComicRender extends GeneralRender {
   ) => Promise<{ entryPath: string; size: number; fileName: string }[]>;
   filePath: string;
   scrollComicInterval: any = null;
+  comicSlotPageMap: number[] = [];
+  comicPageSlotMap: number[] = [];
   constructor(comicBuffer: ArrayBuffer, config: any) {
     super(config);
     this.comicBuffer = comicBuffer;
+    this.config = config;
     this.readerMode = config.readerMode;
     this.format = config.format;
     this.chapterList = [];
@@ -102,15 +115,113 @@ class ComicRender extends GeneralRender {
       resolve();
     });
   }
+  isComicArchiveFormat() {
+    const format = (this.format || "").toUpperCase();
+    return (
+      format === "CBZ" ||
+      format === "CBR" ||
+      format === "CBT" ||
+      format === "CB7"
+    );
+  }
+  // 外层阅读器用它判断进度条方向
+  isMangaLayout() {
+    return this.isComicArchiveFormat();
+  }
+  shouldTightDoublePage() {
+    return (
+      this.readerMode === "double" &&
+      this.config?.isTightDoublePage === "yes" &&
+      this.isComicArchiveFormat()
+    );
+  }
+  // 双页时封面单独一屏，其余两页一屏
+  buildComicPageSlots() {
+    this.comicSlotPageMap = [];
+    this.comicPageSlotMap = [];
+    if (
+      this.readerMode !== "double" ||
+      !this.isComicArchiveFormat() ||
+      this.chapterDocList.length <= 1
+    ) {
+      return;
+    }
+    this.comicSlotPageMap.push(0, -1);
+    for (let i = 1; i < this.chapterDocList.length; i++) {
+      this.comicSlotPageMap.push(i);
+    }
+    this.comicSlotPageMap.forEach((page, slot) => {
+      if (page >= 0) this.comicPageSlotMap[page] = slot;
+    });
+  }
+  hasComicBlankSlots() {
+    return this.comicSlotPageMap.some((page) => page < 0);
+  }
+  // 当前页所在槽位对里的第一张实页
+  getComicSpreadStart(pageIndex: number) {
+    if (!this.hasComicBlankSlots()) {
+      return this.readerMode === "double" && pageIndex % 2 === 1
+        ? pageIndex - 1
+        : pageIndex;
+    }
+    const slot = this.comicPageSlotMap[pageIndex];
+    if (slot === undefined) return pageIndex;
+    const startSlot = slot - (slot % 2);
+    const startPage = this.comicSlotPageMap[startSlot];
+    return startPage >= 0 ? startPage : pageIndex;
+  }
+  // 有补位槽时不能按 pageIndex / 2 计算
+  async scrollToComicPage(pageIndex: number) {
+    const doc = this.getDocument();
+    if (!doc) return;
+    if (!this.hasComicBlankSlots()) {
+      await handleScrollPDFPosition(
+        this.getComicSpreadStart(pageIndex),
+        this.readerMode,
+        doc
+      );
+      return;
+    }
+    const slot = this.comicPageSlotMap[pageIndex] ?? 0;
+    const viewIndex = Math.floor(slot / 2);
+    const gap = getPageGap(doc.body.clientWidth, doc);
+    const stride = doc.body.clientWidth + gap;
+    doc.body.scrollTo(getScrollLeftForLogical(doc.body, viewIndex * stride), 0);
+  }
   async createComicContainer(doc: Document) {
+    // 单页/滚动模式不打紧排标记
+    setTightDoublePage(
+      doc,
+      this.readerMode === "double" && this.shouldTightDoublePage()
+    );
+    this.buildComicPageSlots();
+    const useSlots = this.hasComicBlankSlots();
     const fragment = doc.createDocumentFragment();
     const aspectRatio = await this.getTemplateAspectRatio();
-    for (let index = 0; index < this.chapterDocList.length; index++) {
+    const count = useSlots
+      ? this.comicSlotPageMap.length
+      : this.chapterDocList.length;
+    for (let slot = 0; slot < count; slot++) {
+      const index = useSlots ? this.comicSlotPageMap[slot] : slot;
+      const isBlank = index < 0;
       const iframeContainer = doc.createElement("div");
       iframeContainer.style.position = "relative";
       iframeContainer.style.width = "100%";
-      iframeContainer.id = "pdf-container-" + index;
+      iframeContainer.id = isBlank
+        ? COMIC_BLANK_SLOT_MARK + slot
+        : "pdf-container-" + index;
       iframeContainer.className = "pdf-container";
+      if (isBlank) {
+        // 占位槽要占满一屏，否则后面的页会被排进来
+        iframeContainer.style.paddingTop = doc.body.clientHeight + "px";
+        iframeContainer.style.marginBottom = "0px";
+        iframeContainer.style.overflow = "hidden";
+        iframeContainer.style.breakInside = "avoid";
+        iframeContainer.style.breakAfter =
+          slot < count - 1 ? "column" : "auto";
+        fragment.appendChild(iframeContainer);
+        continue;
+      }
       if (this.readerMode === "single") {
         iframeContainer.style.paddingTop = this.element.clientHeight + "px";
       } else if (this.readerMode === "double") {
@@ -118,8 +229,7 @@ class ComicRender extends GeneralRender {
         // 模板值，宽屏上看高图时按比例算出的高度会超出 body（可视高度
         // 一列）被 overflow 裁掉，导致图片底部不可见，超限时按可视高度
         // letterbox，图片在 iframe 内经 object-fit:contain 仍完整显示
-        const section = Math.floor(doc.body.clientWidth / 12);
-        const gap = section % 2 === 0 ? section : section - 1;
+        const gap = getPageGap(doc.body.clientWidth, doc);
         const pageWidth = (doc.body.clientWidth - gap) / 2;
         const containerHeight = Math.min(
           pageWidth / aspectRatio,
@@ -135,6 +245,11 @@ class ComicRender extends GeneralRender {
       }
       if (this.readerMode === "double") {
         iframeContainer.style.breakInside = "avoid";
+        // 每屏固定分列，避免较矮的页被挤进相邻一屏
+        if (useSlots) {
+          iframeContainer.style.breakAfter =
+            slot < count - 1 ? "column" : "auto";
+        }
       }
       fragment.appendChild(iframeContainer);
     }
@@ -198,6 +313,7 @@ class ComicRender extends GeneralRender {
       let subContainer = subContainers[index];
       let id = subContainer.getAttribute("id");
       if (!id) continue;
+      if (id.indexOf("-blank-") > -1) continue;
       let chapterDocIndex = parseInt(id.split("-").reverse()[0]);
       let isScrollIntoView = isPDFScrolledIntoView(
         this.element,
@@ -595,6 +711,7 @@ class ComicRender extends GeneralRender {
     subDoc.body.style.margin = "0";
     subDoc.body.style.height = "100%";
     subDoc.documentElement.style.height = "100%";
+    alignPageContentToCenter(subIframe);
     this.trigger("rendered", [chapterDocIndex] as any);
   }
   async handleUnloadComicChapter(chapterDocIndex: number) {
@@ -635,19 +752,17 @@ class ComicRender extends GeneralRender {
     }
   }
   async goToChapter(chapterDocIndex, _chapterHref, _chapterTitle) {
-    if (this.readerMode === "double" && chapterDocIndex % 2 == 1) {
-      chapterDocIndex--;
+    let index = parseInt(chapterDocIndex);
+    if (!Number.isFinite(index)) index = 0;
+    if (this.readerMode === "double") {
+      index = this.getComicSpreadStart(index);
     }
     let doc = this.getDocument();
     let iframe = this.getIframe();
     if (!doc || !iframe) return;
-    await this.renderComicPage(chapterDocIndex);
-    await handleScrollPDFPosition(
-      parseInt(chapterDocIndex),
-      this.readerMode,
-      doc
-    );
-    await this.recordByChapter(chapterDocIndex);
+    await this.renderComicPage(index);
+    await this.scrollToComicPage(index);
+    await this.recordByChapter(index);
   }
   getPositionByChapter(chapterDocIndex: number) {
     return {
@@ -689,20 +804,18 @@ class ComicRender extends GeneralRender {
       percentage: bookLocation.percentage,
     };
     let { chapterDocIndex } = bookLocation;
-    if (this.readerMode === "double" && chapterDocIndex % 2 == 1) {
-      chapterDocIndex--;
+    let index = parseInt(chapterDocIndex);
+    if (!Number.isFinite(index)) index = 0;
+    if (this.readerMode === "double") {
+      index = this.getComicSpreadStart(index);
     }
-    await this.renderComicPage(parseInt(chapterDocIndex));
+    await this.renderComicPage(index);
     if (this.readerMode === "scroll") {
       iframe.height = doc.body.scrollHeight + "px";
       iframe.height = doc.body.scrollHeight + 300 + "px";
     }
-    await handleScrollPDFPosition(
-      parseInt(chapterDocIndex),
-      this.readerMode,
-      doc
-    );
-    await this.recordByChapter(parseInt(chapterDocIndex));
+    await this.scrollToComicPage(index);
+    await this.recordByChapter(index);
     this.addPageAnimation();
   }
   // 等待平滑滚动结束：scrollBy(smooth) 后位置尚未到位时 record 会读到旧页
@@ -828,27 +941,26 @@ class ComicRender extends GeneralRender {
     // double 模式一屏两张，需要跨两章走到下一个对页
     let step = this.readerMode === "double" ? 2 : 1;
     let target = currentIndex + direction * step;
-    if (this.readerMode === "double" && target % 2 === 1) {
-      target--;
-    }
     if (
       this.readerMode === "double" &&
       target > this.chapterDocList.length - 1
     ) {
       // 不满一页时退回上一对，避免越界
       target = this.chapterDocList.length - 1;
-      if (target % 2 === 1) target--;
     }
-    if (
-      target < 0 ||
-      target > this.chapterDocList.length - 1 ||
-      target === currentIndex
-    ) {
+    if (target < 0 || target > this.chapterDocList.length - 1) {
       // 已到边界，索引保持不变，由调用方判定"没有更多"
       return;
     }
+    if (this.readerMode === "double") {
+      // 封面单页后对页从奇数页开始
+      target = this.getComicSpreadStart(target);
+    }
+    if (target === currentIndex) {
+      return;
+    }
     await this.renderComicPage(target);
-    await handleScrollPDFPosition(target, this.readerMode, doc);
+    await this.scrollToComicPage(target);
     this.handleComicRecordByIndex(target);
   }
   async prevChapter() {
@@ -912,8 +1024,11 @@ class ComicRender extends GeneralRender {
   }
   async handleComicRecord(doc: Document) {
     let subContainers = doc.querySelectorAll(".pdf-container");
+    const isBlank = (el: Element) =>
+      (el.getAttribute("id") || "").indexOf("-blank-") > -1;
     if (
       subContainers.length > 0 &&
+      !isBlank(subContainers[subContainers.length - 1]) &&
       isPDFScrolledIntoView(
         this.element,
         subContainers[subContainers.length - 1] as HTMLElement,
@@ -928,6 +1043,7 @@ class ComicRender extends GeneralRender {
     }
     for (let index = 0; index < subContainers.length; index++) {
       let subContainer = subContainers[index];
+      if (isBlank(subContainer)) continue;
       if (
         isPDFScrolledIntoView(
           this.element,
@@ -944,6 +1060,7 @@ class ComicRender extends GeneralRender {
   handleComicRecordByContainer(subContainer: HTMLElement) {
     let id = subContainer.getAttribute("id");
     if (!id) return;
+    if (id.indexOf("-blank-") > -1) return;
     let chapterDocIndex = parseInt(id.split("-").reverse()[0]);
     this.handleComicRecordByIndex(chapterDocIndex);
   }
@@ -957,8 +1074,7 @@ class ComicRender extends GeneralRender {
     let doc: any = this.getDocument();
     if (!doc) return;
     let scale = this.readerMode === "double" ? 2 : 1;
-    let section = Math.floor(doc.body.clientWidth / 12);
-    let gap = section % 2 === 0 ? section : section - 1;
+    let gap = getPageGap(doc.body.clientWidth, doc);
     let subIframe = doc.querySelectorAll("iframe")[0];
     let iframeHeight = subIframe?.getBoundingClientRect().height;
     // PPTX/XPS 等复用漫画结构的格式需要与 PDF 一致的位置信息来对齐选文菜单
@@ -1019,11 +1135,29 @@ class ComicRender extends GeneralRender {
         return [];
       }
     }
-    // double 模式一屏两张，返回当前对页的两张图
-    let indices =
-      this.readerMode === "double" && chapterDocIndex % 2 === 0
-        ? [chapterDocIndex, chapterDocIndex + 1]
-        : [chapterDocIndex];
+    // double 模式一屏两张；有补位槽时按槽位换算
+    let indices: number[];
+    if (this.readerMode === "double") {
+      if (this.hasComicBlankSlots()) {
+        const start = this.getComicSpreadStart(chapterDocIndex);
+        const slot = this.comicPageSlotMap[start] ?? 0;
+        indices = [start];
+        const other = this.comicSlotPageMap[slot + 1];
+        if (
+          other !== undefined &&
+          other >= 0 &&
+          other < this.chapterDocList.length
+        ) {
+          indices.push(other);
+        }
+      } else if (chapterDocIndex % 2 === 0) {
+        indices = [chapterDocIndex, chapterDocIndex + 1];
+      } else {
+        indices = [chapterDocIndex];
+      }
+    } else {
+      indices = [chapterDocIndex];
+    }
     let urls: string[] = [];
     for (const index of indices) {
       const url = await this.getComicImageUrl(index);

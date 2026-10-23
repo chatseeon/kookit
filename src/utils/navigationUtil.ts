@@ -16,6 +16,7 @@ import Chapter from "../model/chapter";
 import Chinese from "../libs/zh-convert";
 import _ from "underscore";
 import { cleanText } from "../libs/textProcessor";
+import { getPageGap } from "./pageGapUtil";
 import {
   getBlockElement,
   getPageWidth,
@@ -114,8 +115,7 @@ export const handleScrollPage = async (
   const vertical = isVerticalLayout();
   playMimicalFlip(animation, isMobile, delta, flipToNextPage, flipToPrevPage);
   if (vertical) {
-    let section = Math.floor(element.clientHeight / 12);
-    let gap = section % 2 === 0 ? section : section - 1;
+    const gap = getPageGap(element.clientHeight, doc);
     const height = element.clientHeight;
     const currentScrollTop = doc.body.scrollTop;
     const scrollDistance = height + gap;
@@ -142,8 +142,7 @@ export const handleScrollPage = async (
       });
     }
   } else {
-    let section = Math.floor(element.clientWidth / 12);
-    let gap = section % 2 === 0 ? section : section - 1;
+    const gap = getPageGap(element.clientWidth, doc);
     const width = element.clientWidth;
     const currentScrollLeft = getLogicalHorizontalScroll(doc.body);
     const scrollDistance = width + gap;
@@ -411,7 +410,7 @@ export const handleRenderChapter = async (
   const chapterFixedHeight =
     viewport?.height || getStylePxNumber(incomingStyle, "height");
   if (chapterFixedWidth && chapterFixedHeight) {
-    const pageWidth = getPageWidth(element, readerMode);
+    const pageWidth = getPageWidth(element, readerMode, doc);
     const iframeHeight = iframe?.getBoundingClientRect().height;
     const availableHeight =
       iframeHeight > 0 ? iframeHeight : element.clientHeight;

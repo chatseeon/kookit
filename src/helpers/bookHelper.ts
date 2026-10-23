@@ -1,5 +1,58 @@
 import Book from "../model/Book";
+import { unzipSync } from "fflate";
 declare var window: any;
+
+// 只解压指定条目，避免打开大文件时解压整本
+const readZipEntry = (buffer: ArrayBuffer, name: string) => {
+  const files = unzipSync(new Uint8Array(buffer), {
+    filter: (file) => file.name === name,
+  });
+  return files[name];
+};
+const hasMeta = (opfText: string, name: string, valuePattern: RegExp) => {
+  const tagPattern = /<meta\b[^>]*>/gi;
+  let match;
+  while ((match = tagPattern.exec(opfText))) {
+    const tag = match[0];
+    const nameMatch = /name\s*=\s*["']([^"']+)["']/i.exec(tag);
+    const contentMatch = /content\s*=\s*["']([^"']*)["']/i.exec(tag);
+    if (
+      nameMatch?.[1].toLowerCase() === name &&
+      contentMatch &&
+      valuePattern.test(contentMatch[1])
+    ) {
+      return true;
+    }
+  }
+  return false;
+};
+const getFixedEpubInfo = (buffer: ArrayBuffer) => {
+  const info = { prePaginated: false, comic: false };
+  try {
+    const decoder = new TextDecoder("utf-8");
+    const container = readZipEntry(buffer, "META-INF/container.xml");
+    const containerText = container ? decoder.decode(container) : "";
+    const opfPath = /full-path\s*=\s*["']([^"']+\.opf)["']/i.exec(
+      containerText
+    )?.[1];
+    if (!opfPath) return info;
+    const opf = readZipEntry(buffer, opfPath);
+    const opfText = opf ? decoder.decode(opf) : "";
+    if (!opfText) return info;
+    info.prePaginated =
+      /property\s*=\s*["']rendition:layout["'][^>]*>\s*pre-paginated/i.test(
+        opfText
+      ) || hasMeta(opfText, "fixed-layout", /^true$/i);
+    // 部分老书只用 zero-margin/zero-gutter 声明满版页面
+    info.comic =
+      hasMeta(opfText, "book-type", /comic/i) ||
+      hasMeta(opfText, "zero-gutter", /^true$/i) ||
+      hasMeta(opfText, "zero-margin", /^true$/i);
+    return info;
+  } catch (error) {
+    return info;
+  }
+};
 
 const copyArrayBuffer = (src) => {
   var dst = new ArrayBuffer(src.byteLength);
@@ -47,6 +100,9 @@ class BookHelper {
       isScannedPDF: string;
       ocrEngine: string;
       revertDirection?: string;
+      fixedEpubRender?: string;
+      isLandscapeSpreadAlone?: string;
+      isTightDoublePage?: string;
       externalWorker?: any;
     },
     Kookit: any
@@ -58,7 +114,15 @@ class BookHelper {
     } else if (format === "MOBI" || format === "AZW3" || format === "AZW") {
       rendition = new Kookit.MobiRender(result, config);
     } else if (format === "EPUB") {
-      rendition = new Kookit.EpubRender(result, config);
+      // auto 只处理带漫画特征的固定版式书
+      const fixedMode = config.fixedEpubRender || "auto";
+      const fixedInfo =
+        fixedMode === "off" ? null : getFixedEpubInfo(result);
+      rendition =
+        fixedInfo?.prePaginated &&
+        (fixedMode === "on" || fixedInfo.comic)
+          ? new Kookit.FixedEpubRender(result, config)
+          : new Kookit.EpubRender(result, config);
     } else if (format === "TXT") {
       // let text = iconv.decode(Buffer.from(result), charset || "utf8");
       rendition = new Kookit.TxtRender(result, config);

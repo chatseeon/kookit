@@ -1,4 +1,5 @@
 import EpubRender from "./renders/EpubRender";
+import FixedEpubRender from "./renders/FixedEpubRender";
 import MobiRender from "./renders/MobiRender";
 import PdfRender from "./renders/PdfRender";
 import PdfTextRender from "./renders/PdfTextRender";
@@ -21,6 +22,7 @@ import StyleHelper from "./helpers/styleHelper";
 export {
   CacheRender,
   EpubRender,
+  FixedEpubRender,
   MobiRender,
   PdfRender,
   PdfTextRender,
